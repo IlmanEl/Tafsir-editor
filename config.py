@@ -14,9 +14,12 @@ load_dotenv()
 class Config:
     """Application configuration."""
 
-    # Supabase settings
+    # Supabase API settings
     SUPABASE_URL: str = os.getenv("SUPABASE_URL", "")
     SUPABASE_SERVICE_ROLE_KEY: str = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
+
+    # Direct PostgreSQL connection (for DDL)
+    DATABASE_URL: str = os.getenv("DATABASE_URL", "")
 
     # Paths
     BASE_DIR: Path = Path(__file__).parent
@@ -33,13 +36,16 @@ class Config:
         if not cls.SUPABASE_SERVICE_ROLE_KEY:
             errors.append("SUPABASE_SERVICE_ROLE_KEY is not set")
 
+        if not cls.DATABASE_URL:
+            errors.append("DATABASE_URL is not set")
+
         if errors:
-            print("❌ Configuration errors:")
+            print("Configuration errors:")
             for error in errors:
                 print(f"   - {error}")
             return False
 
-        print("✅ Configuration validated successfully")
+        print("Configuration validated successfully")
         return True
 
 
