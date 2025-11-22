@@ -3,13 +3,15 @@
 Tafsir Editor - Main Entry Point
 
 A Python application for editing Word documents containing
-Quran Tafsir (تفسير) with mixed Russian-Arabic text.
+Quran Tafsir with mixed Russian-Arabic text.
 
 Usage:
-    python main.py                      # Run full setup and demo
-    python main.py --test-connection    # Test Supabase connection only
-    python main.py --schema             # Print SQL schema
+    python main.py                      # Auto-setup database and run demo
+    python main.py --test-connection    # Test database connections
+    python main.py --setup-db           # Create/update database tables
+    python main.py --drop-db            # Drop all tables (WARNING!)
     python main.py --process <file>     # Process a specific document
+    python main.py --demo               # Run demo only
 """
 
 import sys
@@ -17,64 +19,108 @@ import argparse
 from pathlib import Path
 
 from config import config
-from database import get_supabase_client, test_connection, create_tables
-from database.schema import get_schema_sql
+from database import (
+    get_supabase_client,
+    test_connection,
+    create_tables,
+    drop_tables,
+    check_tables_exist,
+    test_db_connection,
+)
 from document_processor import TafsirDocumentProcessor, create_sample_document
 
 
 def print_banner():
     """Print application banner."""
     banner = """
-╔═══════════════════════════════════════════════════════════════╗
-║                                                               ║
-║   🕌  TAFSIR EDITOR  📖                                       ║
-║   ─────────────────────────────────────────                   ║
-║   Word Document Editor for Quran Tafsir                       ║
-║   Supports Russian (Cyrillic) and Arabic text                 ║
-║                                                               ║
-╚═══════════════════════════════════════════════════════════════╝
+======================================================
+     TAFSIR EDITOR
+     --------------
+     Word Document Editor for Quran Tafsir
+     Supports Russian (Cyrillic) and Arabic text
+======================================================
 """
     print(banner)
 
 
-def test_supabase_connection() -> bool:
-    """Test and report Supabase connection status."""
+def test_all_connections() -> bool:
+    """Test both PostgreSQL and Supabase API connections."""
     print("\n" + "="*50)
-    print("🔌 SUPABASE CONNECTION TEST")
+    print("DATABASE CONNECTION TEST")
     print("="*50 + "\n")
 
     # Validate config first
     if not config.validate():
-        print("\n⚠️  Please configure your .env file first!")
-        print("   Copy .env.example to .env and fill in your credentials.")
+        print("\nPlease configure your .env file first!")
+        print("Copy .env.example to .env and fill in your credentials.")
         return False
 
-    # Test connection
-    return test_connection()
+    # Test direct PostgreSQL connection
+    print("\n[1/2] Testing PostgreSQL connection (for DDL)...")
+    pg_ok = test_db_connection()
+
+    # Test Supabase API connection
+    print("\n[2/2] Testing Supabase API connection...")
+    api_ok = test_connection()
+
+    print("\n" + "-"*50)
+    if pg_ok and api_ok:
+        print("All connections successful!")
+        return True
+    else:
+        print("Some connections failed. Check your .env settings.")
+        return False
 
 
 def setup_database() -> bool:
-    """Check database tables."""
+    """
+    Automatically create database tables.
+    Uses direct PostgreSQL connection via psycopg2.
+    """
     print("\n" + "="*50)
-    print("🗄️  DATABASE SETUP")
+    print("DATABASE SETUP (AUTO)")
     print("="*50 + "\n")
 
-    return create_tables()
+    # Check existing tables
+    print("Checking existing tables...")
+    tables = check_tables_exist()
+    all_exist = all(tables.values())
+
+    if all_exist:
+        print("All tables already exist:")
+        for table, exists in tables.items():
+            print(f"   [OK] {table}")
+        return True
+
+    # Create missing tables
+    print("\nCreating tables automatically...")
+    return create_tables(seed_data=True)
 
 
-def print_schema():
-    """Print the SQL schema for manual execution."""
+def drop_database():
+    """Drop all tables (with confirmation)."""
     print("\n" + "="*50)
-    print("📋 SQL SCHEMA")
-    print("="*50)
-    print("\nCopy this SQL to Supabase Dashboard > SQL Editor:\n")
-    print(get_schema_sql())
+    print("DROP DATABASE TABLES")
+    print("="*50 + "\n")
+
+    print("WARNING: This will delete ALL data in the following tables:")
+    print("   - formatting_rules")
+    print("   - document_history")
+    print("   - transliteration_rules")
+    print()
+
+    confirm = input("Type 'YES' to confirm: ")
+    if confirm == "YES":
+        return drop_tables()
+    else:
+        print("Cancelled.")
+        return False
 
 
 def process_document(file_path: str):
     """Process a Word document."""
     print("\n" + "="*50)
-    print("📄 DOCUMENT PROCESSING")
+    print("DOCUMENT PROCESSING")
     print("="*50 + "\n")
 
     processor = TafsirDocumentProcessor()
@@ -82,7 +128,7 @@ def process_document(file_path: str):
     if processor.load(file_path):
         processor.print_paragraphs(limit=30)
 
-        # Log to database if connected
+        # Log to database
         try:
             client = get_supabase_client()
             stats = processor.get_stats()
@@ -102,15 +148,15 @@ def process_document(file_path: str):
                 "characters_changed": stats.total_characters
             }).execute()
 
-            print("✅ Analysis logged to database")
+            print("[OK] Analysis logged to database")
         except Exception as e:
-            print(f"⚠️  Could not log to database: {e}")
+            print(f"[WARN] Could not log to database: {e}")
 
 
 def run_demo():
     """Run a full demonstration."""
     print("\n" + "="*50)
-    print("🎯 RUNNING DEMO")
+    print("RUNNING DEMO")
     print("="*50 + "\n")
 
     # Create sample document
@@ -129,12 +175,17 @@ def main():
     parser.add_argument(
         "--test-connection",
         action="store_true",
-        help="Test Supabase connection only"
+        help="Test database connections"
     )
     parser.add_argument(
-        "--schema",
+        "--setup-db",
         action="store_true",
-        help="Print SQL schema for database setup"
+        help="Create database tables"
+    )
+    parser.add_argument(
+        "--drop-db",
+        action="store_true",
+        help="Drop all tables (WARNING: deletes data!)"
     )
     parser.add_argument(
         "--process",
@@ -153,17 +204,25 @@ def main():
     print_banner()
 
     # Handle specific commands
-    if args.schema:
-        print_schema()
-        return
-
     if args.test_connection:
-        success = test_supabase_connection()
+        success = test_all_connections()
+        sys.exit(0 if success else 1)
+
+    if args.setup_db:
+        if not config.validate():
+            sys.exit(1)
+        success = setup_database()
+        sys.exit(0 if success else 1)
+
+    if args.drop_db:
+        if not config.validate():
+            sys.exit(1)
+        success = drop_database()
         sys.exit(0 if success else 1)
 
     if args.process:
         if not Path(args.process).exists():
-            print(f"❌ File not found: {args.process}")
+            print(f"File not found: {args.process}")
             sys.exit(1)
         process_document(args.process)
         return
@@ -172,44 +231,51 @@ def main():
         run_demo()
         return
 
-    # Default: Run full setup
-    print("Running initial setup...\n")
+    # ===========================================
+    # DEFAULT: Full automatic setup
+    # ===========================================
+    print("Running automatic setup...\n")
 
-    # Step 1: Test connection
-    print("Step 1/3: Testing Supabase connection...")
-    if not test_supabase_connection():
-        print("\n⚠️  Fix connection issues before continuing.")
-        print("   Run: python main.py --schema")
-        print("   to get the SQL schema for manual setup.")
+    # Step 1: Validate configuration
+    print("Step 1/4: Validating configuration...")
+    if not config.validate():
+        print("\nPlease create .env file with your credentials.")
+        print("See .env.example for reference.")
         sys.exit(1)
 
-    # Step 2: Check database
-    print("\nStep 2/3: Checking database tables...")
-    tables_ok = setup_database()
+    # Step 2: Test connections
+    print("\nStep 2/4: Testing database connections...")
+    if not test_all_connections():
+        print("\nFix connection issues before continuing.")
+        sys.exit(1)
 
-    if not tables_ok:
-        print("\n📋 Database tables need to be created.")
-        print("   Run: python main.py --schema")
-        print("   Copy the SQL to Supabase Dashboard > SQL Editor > Run")
+    # Step 3: Setup database (auto-create tables)
+    print("\nStep 3/4: Setting up database...")
+    if not setup_database():
+        print("\nDatabase setup failed.")
+        sys.exit(1)
 
-    # Step 3: Demo
-    print("\nStep 3/3: Running demo...")
+    # Step 4: Run demo
+    print("\nStep 4/4: Running demo...")
     run_demo()
 
     print("\n" + "="*50)
-    print("✅ SETUP COMPLETE")
+    print("SETUP COMPLETE!")
     print("="*50)
     print("""
+Your database is ready. Tables created:
+   - formatting_rules (font settings, paragraph styles)
+   - document_history (change log)
+   - transliteration_rules (cyrillic-arabic mapping)
+
 Next steps:
-1. Create .env file with your Supabase credentials (if not done)
-2. Run SQL schema in Supabase Dashboard (if tables missing)
-3. Process your documents:
-   python main.py --process path/to/your/tafsir.docx
+   1. Place your .docx files in the 'documents' folder
+   2. Process them: python main.py --process documents/your_file.docx
 
 Commands:
-   python main.py                    # Full setup
-   python main.py --test-connection  # Test database
-   python main.py --schema           # Show SQL schema
+   python main.py                    # Auto-setup + demo
+   python main.py --test-connection  # Test connections
+   python main.py --setup-db         # Create tables
    python main.py --process FILE     # Process document
    python main.py --demo             # Run demo
 """)

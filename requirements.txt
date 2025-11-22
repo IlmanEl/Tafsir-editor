@@ -10,5 +10,5 @@ python-dotenv>=1.0.0
 # HTTP client (required by supabase)
 httpx>=0.25.0
 
-# For async operations (optional)
-asyncio-compat>=0.1.0
+# PostgreSQL direct connection (for DDL operations)
+psycopg2-binary>=2.9.9

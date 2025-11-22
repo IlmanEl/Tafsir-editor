@@ -1,24 +1,20 @@
 """
 Database schema definitions and setup.
-Creates tables for Tafsir Editor using Supabase.
+Creates tables for Tafsir Editor using direct PostgreSQL connection.
 
-Note: Supabase Python client doesn't support DDL directly.
-We provide SQL statements to execute via Supabase SQL Editor
-or use PostgREST-compatible approaches.
+Uses psycopg2 for DDL operations (CREATE TABLE, etc.)
 """
 
-from typing import List, Dict, Any
-from .connection import get_supabase_client
+import psycopg2
+from psycopg2 import sql
+from config import config
 
 
 # SQL statements for creating tables
-# Execute these in Supabase SQL Editor (Dashboard > SQL Editor)
-
 SCHEMA_SQL = """
 -- ============================================
 -- TAFSIR EDITOR DATABASE SCHEMA
 -- ============================================
--- Execute this SQL in Supabase Dashboard > SQL Editor
 
 -- 1. Formatting Rules Table
 -- Stores font settings, paragraph styles, etc.
@@ -66,7 +62,7 @@ CREATE TABLE IF NOT EXISTS document_history (
     document_path TEXT,
 
     -- Change info
-    action VARCHAR(50) NOT NULL, -- 'created', 'modified', 'formatted', 'transliterated', 'exported'
+    action VARCHAR(50) NOT NULL,
     description TEXT,
 
     -- Change details (JSON for flexibility)
@@ -88,15 +84,15 @@ CREATE TABLE IF NOT EXISTS transliteration_rules (
 
     -- Rule identification
     name VARCHAR(255) NOT NULL,
-    category VARCHAR(100), -- 'vowels', 'consonants', 'special', 'combinations'
+    category VARCHAR(100),
 
     -- Conversion mapping
     cyrillic_pattern VARCHAR(50) NOT NULL,
     arabic_pattern VARCHAR(50) NOT NULL,
 
     -- Context rules (when to apply)
-    context_before VARCHAR(100), -- regex pattern for preceding context
-    context_after VARCHAR(100),  -- regex pattern for following context
+    context_before VARCHAR(100),
+    context_after VARCHAR(100),
 
     -- Priority (higher = applied first)
     priority INTEGER DEFAULT 100,
@@ -127,11 +123,10 @@ ON transliteration_rules(category);
 
 CREATE INDEX IF NOT EXISTS idx_transliteration_rules_priority
 ON transliteration_rules(priority DESC);
+"""
 
--- ============================================
--- INITIAL DATA
--- ============================================
-
+# Initial data to seed the database
+SEED_SQL = """
 -- Default formatting rule for Tafsir
 INSERT INTO formatting_rules (name, description, font_name_arabic, font_name_cyrillic)
 VALUES (
@@ -166,88 +161,188 @@ VALUES
     ('waw', 'consonants', 'в', 'و', 100),
     ('ya', 'consonants', 'й', 'ي', 100)
 ON CONFLICT DO NOTHING;
+"""
 
--- ============================================
--- Enable Row Level Security (optional)
--- Since we use service role key, RLS is bypassed
--- ============================================
-
--- ALTER TABLE formatting_rules ENABLE ROW LEVEL SECURITY;
--- ALTER TABLE document_history ENABLE ROW LEVEL SECURITY;
--- ALTER TABLE transliteration_rules ENABLE ROW LEVEL SECURITY;
-
-SELECT 'Schema created successfully!' as status;
+DROP_SQL = """
+DROP TABLE IF EXISTS document_history CASCADE;
+DROP TABLE IF EXISTS transliteration_rules CASCADE;
+DROP TABLE IF EXISTS formatting_rules CASCADE;
 """
 
 
-def get_schema_sql() -> str:
-    """Return the SQL schema for manual execution."""
-    return SCHEMA_SQL
-
-
-def create_tables() -> bool:
+def get_db_connection():
     """
-    Attempt to verify tables exist by querying them.
-
-    Note: Direct DDL execution requires Supabase SQL Editor.
-    This function checks if tables are accessible.
+    Create a direct PostgreSQL connection using DATABASE_URL.
 
     Returns:
-        bool: True if tables are accessible
+        psycopg2 connection object
     """
-    client = get_supabase_client()
-    tables = ["formatting_rules", "document_history", "transliteration_rules"]
-    results = {}
+    if not config.DATABASE_URL:
+        raise ValueError("DATABASE_URL is not set in .env file")
 
-    print("🔍 Checking database tables...")
+    return psycopg2.connect(config.DATABASE_URL)
 
-    for table in tables:
-        try:
-            response = client.table(table).select("id").limit(1).execute()
-            results[table] = True
-            print(f"   ✅ {table}: exists")
-        except Exception as e:
-            if "does not exist" in str(e):
-                results[table] = False
-                print(f"   ❌ {table}: not found")
+
+def create_tables(seed_data: bool = True) -> bool:
+    """
+    Create all database tables using direct PostgreSQL connection.
+
+    Args:
+        seed_data: Whether to insert initial data (default: True)
+
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    conn = None
+    try:
+        print("Connecting to PostgreSQL database...")
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        # Execute schema creation
+        print("Creating tables...")
+        cursor.execute(SCHEMA_SQL)
+        conn.commit()
+        print("   Tables created successfully")
+
+        # Insert seed data
+        if seed_data:
+            print("Inserting initial data...")
+            cursor.execute(SEED_SQL)
+            conn.commit()
+            print("   Initial data inserted")
+
+        # Verify tables exist
+        cursor.execute("""
+            SELECT table_name
+            FROM information_schema.tables
+            WHERE table_schema = 'public'
+            AND table_name IN ('formatting_rules', 'document_history', 'transliteration_rules')
+        """)
+        tables = [row[0] for row in cursor.fetchall()]
+
+        print("\nVerifying tables:")
+        for table in ['formatting_rules', 'document_history', 'transliteration_rules']:
+            if table in tables:
+                print(f"   [OK] {table}")
             else:
-                results[table] = False
-                print(f"   ❌ {table}: error - {e}")
+                print(f"   [MISSING] {table}")
 
-    all_exist = all(results.values())
+        cursor.close()
+        print("\nDatabase setup completed successfully!")
+        return True
 
-    if not all_exist:
-        print("\n📋 To create tables, run this SQL in Supabase Dashboard:")
-        print("   Dashboard > SQL Editor > New Query > Paste schema > Run")
-        print("\n   Or use: python -c \"from database.schema import get_schema_sql; print(get_schema_sql())\"")
+    except psycopg2.Error as e:
+        print(f"Database error: {e}")
+        if conn:
+            conn.rollback()
+        return False
+    except Exception as e:
+        print(f"Error: {e}")
+        return False
+    finally:
+        if conn:
+            conn.close()
 
-    return all_exist
 
-
-def drop_tables() -> str:
-    """Return SQL to drop all tables (for reset)."""
-    return """
-    -- WARNING: This will delete all data!
-    DROP TABLE IF EXISTS document_history CASCADE;
-    DROP TABLE IF EXISTS transliteration_rules CASCADE;
-    DROP TABLE IF EXISTS formatting_rules CASCADE;
+def drop_tables() -> bool:
     """
+    Drop all tables (use with caution!).
+
+    Returns:
+        bool: True if successful
+    """
+    conn = None
+    try:
+        print("WARNING: Dropping all tables...")
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        cursor.execute(DROP_SQL)
+        conn.commit()
+
+        cursor.close()
+        print("All tables dropped successfully")
+        return True
+
+    except Exception as e:
+        print(f"Error dropping tables: {e}")
+        if conn:
+            conn.rollback()
+        return False
+    finally:
+        if conn:
+            conn.close()
 
 
-def insert_test_data() -> bool:
-    """Insert sample data for testing."""
-    client = get_supabase_client()
+def check_tables_exist() -> dict:
+    """
+    Check which tables exist in the database.
+
+    Returns:
+        dict: Table names mapped to existence status
+    """
+    conn = None
+    tables_status = {
+        'formatting_rules': False,
+        'document_history': False,
+        'transliteration_rules': False
+    }
 
     try:
-        # Test insert into document_history
-        client.table("document_history").insert({
-            "document_name": "test_document.docx",
-            "action": "created",
-            "description": "Test entry"
-        }).execute()
+        conn = get_db_connection()
+        cursor = conn.cursor()
 
-        print("✅ Test data inserted successfully")
-        return True
+        cursor.execute("""
+            SELECT table_name
+            FROM information_schema.tables
+            WHERE table_schema = 'public'
+            AND table_name IN ('formatting_rules', 'document_history', 'transliteration_rules')
+        """)
+
+        existing = [row[0] for row in cursor.fetchall()]
+        for table in existing:
+            tables_status[table] = True
+
+        cursor.close()
+
     except Exception as e:
-        print(f"❌ Failed to insert test data: {e}")
+        print(f"Error checking tables: {e}")
+    finally:
+        if conn:
+            conn.close()
+
+    return tables_status
+
+
+def get_schema_sql() -> str:
+    """Return the SQL schema for reference."""
+    return SCHEMA_SQL + "\n" + SEED_SQL
+
+
+def test_db_connection() -> bool:
+    """
+    Test the direct PostgreSQL connection.
+
+    Returns:
+        bool: True if connection successful
+    """
+    conn = None
+    try:
+        print(f"Testing connection to: {config.DATABASE_URL[:50]}...")
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        cursor.execute("SELECT version();")
+        version = cursor.fetchone()[0]
+        print(f"   Connected to: {version[:60]}...")
+
+        cursor.close()
+        return True
+
+    except Exception as e:
+        print(f"Connection failed: {e}")
         return False
+    finally:
+        if conn:
+            conn.close()
