@@ -12,3 +12,6 @@ httpx>=0.25.0
 
 # PostgreSQL direct connection (for DDL operations)
 psycopg2-binary>=2.9.9
+
+# OpenAI API for AI-powered editing
+openai>=1.0.0
