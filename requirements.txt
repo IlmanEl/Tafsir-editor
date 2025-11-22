@@ -1,0 +1,14 @@
+# Supabase Python client
+supabase>=2.0.0
+
+# Word document processing
+python-docx>=1.1.0
+
+# Environment variables
+python-dotenv>=1.0.0
+
+# HTTP client (required by supabase)
+httpx>=0.25.0
+
+# For async operations (optional)
+asyncio-compat>=0.1.0
