@@ -5,13 +5,17 @@ Tafsir Editor - Main Entry Point
 A Python application for editing Word documents containing
 Quran Tafsir with mixed Russian-Arabic text.
 
+Features:
+- Smart block classification (AYAH, TRANSLATION, COMMENTARY)
+- Automatic database setup
+- AI-ready text processing (protects Quranic verses)
+
 Usage:
     python main.py                      # Auto-setup database and run demo
+    python main.py --classify <file>    # Classify document blocks
+    python main.py --process <file>     # Process and log to database
     python main.py --test-connection    # Test database connections
     python main.py --setup-db           # Create/update database tables
-    python main.py --drop-db            # Drop all tables (WARNING!)
-    python main.py --process <file>     # Process a specific document
-    python main.py --demo               # Run demo only
 """
 
 import sys
@@ -27,7 +31,11 @@ from database import (
     check_tables_exist,
     test_db_connection,
 )
-from document_processor import TafsirDocumentProcessor, create_sample_document
+from document_processor import (
+    TafsirDocumentProcessor,
+    create_sample_document,
+    BlockType,
+)
 
 
 def print_banner():
@@ -36,8 +44,8 @@ def print_banner():
 ======================================================
      TAFSIR EDITOR
      --------------
-     Word Document Editor for Quran Tafsir
-     Supports Russian (Cyrillic) and Arabic text
+     Smart Document Parser for Quran Tafsir
+     Block Classification + AI-Ready Processing
 ======================================================
 """
     print(banner)
@@ -49,17 +57,14 @@ def test_all_connections() -> bool:
     print("DATABASE CONNECTION TEST")
     print("="*50 + "\n")
 
-    # Validate config first
     if not config.validate():
         print("\nPlease configure your .env file first!")
         print("Copy .env.example to .env and fill in your credentials.")
         return False
 
-    # Test direct PostgreSQL connection
     print("\n[1/2] Testing PostgreSQL connection (for DDL)...")
     pg_ok = test_db_connection()
 
-    # Test Supabase API connection
     print("\n[2/2] Testing Supabase API connection...")
     api_ok = test_connection()
 
@@ -73,15 +78,11 @@ def test_all_connections() -> bool:
 
 
 def setup_database() -> bool:
-    """
-    Automatically create database tables.
-    Uses direct PostgreSQL connection via psycopg2.
-    """
+    """Automatically create database tables."""
     print("\n" + "="*50)
     print("DATABASE SETUP (AUTO)")
     print("="*50 + "\n")
 
-    # Check existing tables
     print("Checking existing tables...")
     tables = check_tables_exist()
     all_exist = all(tables.values())
@@ -92,7 +93,6 @@ def setup_database() -> bool:
             print(f"   [OK] {table}")
         return True
 
-    # Create missing tables
     print("\nCreating tables automatically...")
     return create_tables(seed_data=True)
 
@@ -117,60 +117,120 @@ def drop_database():
         return False
 
 
+def classify_document(file_path: str):
+    """
+    Classify document blocks and show detailed analysis.
+    This is the main function for checking block detection accuracy.
+    """
+    print("\n" + "="*70)
+    print("SMART DOCUMENT CLASSIFICATION")
+    print("="*70 + "\n")
+
+    processor = TafsirDocumentProcessor()
+
+    if not processor.load(file_path):
+        return False
+
+    # Run classification
+    print("\nClassifying blocks...")
+    processor.classify_document()
+
+    # Print detailed classification
+    processor.print_classification(limit=50)
+
+    # Show AI processing summary
+    ai_blocks = processor.get_ai_processable_blocks()
+    ayah_blocks = processor.get_blocks_by_type(BlockType.AYAH)
+
+    print("\n" + "="*70)
+    print("AI PROCESSING SUMMARY")
+    print("="*70)
+    print(f"""
+  PROTECTED (will NOT be modified by AI):
+    - {len(ayah_blocks)} Quranic verses (AYAH blocks)
+
+  READY FOR AI PROCESSING:
+    - {len(ai_blocks)} blocks (TRANSLATION + COMMENTARY)
+    - {sum(b.word_count for b in ai_blocks)} words total
+
+  Next step: Add OpenAI API key and run AI processing on COMMENTARY blocks.
+""")
+
+    return True
+
+
 def process_document(file_path: str):
-    """Process a Word document."""
+    """Process a Word document with classification and database logging."""
     print("\n" + "="*50)
     print("DOCUMENT PROCESSING")
     print("="*50 + "\n")
 
     processor = TafsirDocumentProcessor()
 
-    if processor.load(file_path):
-        processor.print_paragraphs(limit=30)
+    if not processor.load(file_path):
+        return False
 
-        # Log to database
-        try:
-            client = get_supabase_client()
-            stats = processor.get_stats()
+    # Classify and display
+    processor.classify_document()
+    processor.print_classification(limit=20)
 
-            client.table("document_history").insert({
-                "document_name": Path(file_path).name,
-                "document_path": str(file_path),
-                "action": "analyzed",
-                "description": f"Document analyzed: {stats.total_paragraphs} paragraphs",
-                "changes_json": {
-                    "total_paragraphs": stats.total_paragraphs,
-                    "arabic_paragraphs": stats.arabic_paragraphs,
-                    "cyrillic_paragraphs": stats.cyrillic_paragraphs,
-                    "mixed_paragraphs": stats.mixed_paragraphs
-                },
-                "paragraphs_affected": stats.total_paragraphs,
-                "characters_changed": stats.total_characters
-            }).execute()
+    # Log to database
+    try:
+        client = get_supabase_client()
+        stats = processor.get_stats()
 
-            print("[OK] Analysis logged to database")
-        except Exception as e:
-            print(f"[WARN] Could not log to database: {e}")
+        client.table("document_history").insert({
+            "document_name": Path(file_path).name,
+            "document_path": str(file_path),
+            "action": "classified",
+            "description": f"Smart classification: {stats.ayah_blocks} ayahs, {stats.commentary_blocks} commentary blocks",
+            "changes_json": {
+                "total_blocks": stats.total_blocks,
+                "ayah_blocks": stats.ayah_blocks,
+                "translation_blocks": stats.translation_blocks,
+                "commentary_blocks": stats.commentary_blocks,
+                "ai_processable_blocks": stats.ai_processable_blocks,
+                "ai_processable_words": stats.ai_processable_words
+            },
+            "paragraphs_affected": stats.total_blocks,
+            "characters_changed": stats.total_characters
+        }).execute()
+
+        print("[OK] Classification logged to database")
+    except Exception as e:
+        print(f"[WARN] Could not log to database: {e}")
+
+    return True
 
 
 def run_demo():
-    """Run a full demonstration."""
+    """Run a full demonstration with sample document."""
     print("\n" + "="*50)
     print("RUNNING DEMO")
     print("="*50 + "\n")
 
     # Create sample document
-    print("Creating sample document...")
+    print("Creating sample Tafsir document...")
     sample_path = create_sample_document()
 
-    # Process it
-    process_document(sample_path)
+    # Classify it
+    classify_document(sample_path)
 
 
 def main():
     """Main entry point."""
     parser = argparse.ArgumentParser(
-        description="Tafsir Editor - Word Document Editor for Quran Tafsir"
+        description="Tafsir Editor - Smart Document Parser for Quran Tafsir"
+    )
+    parser.add_argument(
+        "--classify",
+        metavar="FILE",
+        help="Classify document blocks (check AYAH vs COMMENTARY detection)"
+    )
+    parser.add_argument(
+        "--process",
+        metavar="FILE",
+        help="Process document and log to database"
     )
     parser.add_argument(
         "--test-connection",
@@ -186,11 +246,6 @@ def main():
         "--drop-db",
         action="store_true",
         help="Drop all tables (WARNING: deletes data!)"
-    )
-    parser.add_argument(
-        "--process",
-        metavar="FILE",
-        help="Process a specific .docx file"
     )
     parser.add_argument(
         "--demo",
@@ -219,6 +274,13 @@ def main():
             sys.exit(1)
         success = drop_database()
         sys.exit(0 if success else 1)
+
+    if args.classify:
+        if not Path(args.classify).exists():
+            print(f"File not found: {args.classify}")
+            sys.exit(1)
+        classify_document(args.classify)
+        return
 
     if args.process:
         if not Path(args.process).exists():
@@ -255,29 +317,33 @@ def main():
         print("\nDatabase setup failed.")
         sys.exit(1)
 
-    # Step 4: Run demo
-    print("\nStep 4/4: Running demo...")
+    # Step 4: Run demo with classification
+    print("\nStep 4/4: Running demo with smart classification...")
     run_demo()
 
-    print("\n" + "="*50)
+    print("\n" + "="*70)
     print("SETUP COMPLETE!")
-    print("="*50)
+    print("="*70)
     print("""
-Your database is ready. Tables created:
-   - formatting_rules (font settings, paragraph styles)
-   - document_history (change log)
-   - transliteration_rules (cyrillic-arabic mapping)
+Your Tafsir Editor is ready!
 
-Next steps:
-   1. Place your .docx files in the 'documents' folder
-   2. Process them: python main.py --process documents/your_file.docx
+Block Types Detected:
+  [AYAH]       - Quranic verses (PROTECTED from AI)
+  [TRANSLATE]  - Russian translations (can process with AI)
+  [COMMENTARY] - Tafsir text (can process with AI)
+  [HEADER]     - Section headers
+  [REFERENCE]  - Citations and references
 
 Commands:
-   python main.py                    # Auto-setup + demo
-   python main.py --test-connection  # Test connections
-   python main.py --setup-db         # Create tables
-   python main.py --process FILE     # Process document
-   python main.py --demo             # Run demo
+  python main.py --classify FILE     # Check block classification
+  python main.py --process FILE      # Process and log to DB
+  python main.py --demo              # Run demo
+
+Next steps:
+  1. Place your .docx files in 'documents/' folder
+  2. Run: python main.py --classify documents/your_file.docx
+  3. Verify AYAH blocks are correctly detected
+  4. Add OpenAI API key for AI processing (coming next)
 """)
 
 

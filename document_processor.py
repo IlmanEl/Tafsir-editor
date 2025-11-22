@@ -1,350 +1,563 @@
 """
 Document Processor for Tafsir Word files.
-Handles reading, parsing, and processing .docx files with mixed Russian-Arabic text.
+Handles reading, parsing, and smart classification of .docx files
+with mixed Russian-Arabic text.
+
+Block Types:
+- AYAH: Quranic verses (Arabic text, typically red or special font)
+- TRANSLATION: Russian translation of ayahs
+- COMMENTARY: Tafsir/explanation text (for AI processing)
+- HEADER: Section headers, titles
+- UNKNOWN: Unclassified content
 """
 
 import re
+from enum import Enum
 from pathlib import Path
-from typing import List, Dict, Any, Optional, Generator
-from dataclasses import dataclass
+from typing import List, Optional, Generator, Tuple
+from dataclasses import dataclass, field
 from docx import Document
-from docx.shared import Pt, Inches
+from docx.shared import Pt, Inches, RGBColor
 from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.oxml.ns import qn
 from config import config
 
 
+class BlockType(Enum):
+    """Types of content blocks in Tafsir documents."""
+    AYAH = "ayah"              # Quranic verse (Arabic) - DO NOT process with AI
+    TRANSLATION = "translation" # Russian translation of ayah
+    COMMENTARY = "commentary"   # Tafsir text - CAN be processed with AI
+    HEADER = "header"          # Section headers
+    REFERENCE = "reference"    # References, citations
+    EMPTY = "empty"            # Empty paragraphs
+    UNKNOWN = "unknown"        # Unclassified
+
+
 @dataclass
-class ParagraphInfo:
-    """Information about a document paragraph."""
+class FontInfo:
+    """Font information extracted from a run."""
+    name: Optional[str] = None
+    size: Optional[float] = None
+    bold: bool = False
+    italic: bool = False
+    color_rgb: Optional[Tuple[int, int, int]] = None
+    is_arabic_font: bool = False
+
+
+@dataclass
+class TafsirBlock:
+    """
+    A classified block of content from a Tafsir document.
+    """
     index: int
+    block_type: BlockType
     text: str
-    style: Optional[str]
-    has_arabic: bool
-    has_cyrillic: bool
-    is_mixed: bool
-    word_count: int
-    char_count: int
+
+    # Script detection
+    has_arabic: bool = False
+    has_cyrillic: bool = False
+    is_mixed: bool = False
+    arabic_ratio: float = 0.0  # Percentage of Arabic characters
+
+    # Font/style info
+    primary_font: Optional[str] = None
+    font_size: Optional[float] = None
+    is_bold: bool = False
+    is_italic: bool = False
+    text_color: Optional[Tuple[int, int, int]] = None
+    is_red_text: bool = False
+
+    # For AI processing
+    can_process_with_ai: bool = False
+    ai_processing_notes: str = ""
+
+    # Statistics
+    word_count: int = 0
+    char_count: int = 0
+
+    # Original paragraph reference (for modifications)
+    _paragraph_ref: object = field(default=None, repr=False)
 
 
 @dataclass
 class DocumentStats:
-    """Statistics about the document."""
-    total_paragraphs: int
-    total_words: int
-    total_characters: int
-    arabic_paragraphs: int
-    cyrillic_paragraphs: int
-    mixed_paragraphs: int
-    empty_paragraphs: int
+    """Statistics about the classified document."""
+    total_blocks: int = 0
+    ayah_blocks: int = 0
+    translation_blocks: int = 0
+    commentary_blocks: int = 0
+    header_blocks: int = 0
+    reference_blocks: int = 0
+    empty_blocks: int = 0
+    unknown_blocks: int = 0
+
+    total_words: int = 0
+    total_characters: int = 0
+
+    # AI processing candidates
+    ai_processable_blocks: int = 0
+    ai_processable_words: int = 0
 
 
 class TafsirDocumentProcessor:
     """
-    Processor for Tafsir Word documents.
-    Handles mixed Russian (Cyrillic) and Arabic text.
+    Smart processor for Tafsir Word documents.
+    Classifies blocks by type for selective AI processing.
     """
 
     # Unicode ranges for script detection
-    ARABIC_PATTERN = re.compile(r'[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF]')
-    CYRILLIC_PATTERN = re.compile(r'[\u0400-\u04FF\u0500-\u052F]')
+    ARABIC_RANGE = re.compile(r'[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF]')
+    CYRILLIC_RANGE = re.compile(r'[\u0400-\u04FF\u0500-\u052F]')
+
+    # Known Arabic fonts
+    ARABIC_FONTS = {
+        'traditional arabic', 'arabic typesetting', 'sakkal majalla',
+        'simplified arabic', 'arabic transparent', 'al-quran',
+        'scheherazade', 'amiri', 'lateef', 'noto naskh arabic',
+        'times new roman',  # Often used for Arabic in mixed docs
+    }
+
+    # Red color threshold (for detecting red text)
+    RED_THRESHOLD = 150  # R value must be > this, G and B < 100
 
     def __init__(self, file_path: Optional[str] = None):
-        """
-        Initialize the document processor.
-
-        Args:
-            file_path: Optional path to .docx file
-        """
+        """Initialize the document processor."""
         self.file_path: Optional[Path] = Path(file_path) if file_path else None
         self.document: Optional[Document] = None
+        self.blocks: List[TafsirBlock] = []
         self._stats: Optional[DocumentStats] = None
 
     def load(self, file_path: Optional[str] = None) -> bool:
-        """
-        Load a Word document.
-
-        Args:
-            file_path: Path to .docx file (uses init path if not provided)
-
-        Returns:
-            bool: True if loaded successfully
-        """
+        """Load a Word document."""
         if file_path:
             self.file_path = Path(file_path)
 
         if not self.file_path:
-            print("❌ No file path provided")
+            print("[ERROR] No file path provided")
             return False
 
         if not self.file_path.exists():
-            print(f"❌ File not found: {self.file_path}")
+            print(f"[ERROR] File not found: {self.file_path}")
             return False
 
         if not self.file_path.suffix.lower() == '.docx':
-            print(f"❌ Not a .docx file: {self.file_path}")
+            print(f"[ERROR] Not a .docx file: {self.file_path}")
             return False
 
         try:
             self.document = Document(str(self.file_path))
-            self._stats = None  # Reset stats cache
-            print(f"✅ Document loaded: {self.file_path.name}")
-            print(f"   Paragraphs: {len(self.document.paragraphs)}")
+            self.blocks = []
+            self._stats = None
+            print(f"[OK] Document loaded: {self.file_path.name}")
+            print(f"     Paragraphs: {len(self.document.paragraphs)}")
             return True
         except Exception as e:
-            print(f"❌ Failed to load document: {e}")
+            print(f"[ERROR] Failed to load document: {e}")
             return False
 
-    def has_arabic(self, text: str) -> bool:
-        """Check if text contains Arabic characters."""
-        return bool(self.ARABIC_PATTERN.search(text))
+    def _count_script_chars(self, text: str) -> Tuple[int, int, int]:
+        """Count Arabic, Cyrillic, and other characters."""
+        arabic = len(self.ARABIC_RANGE.findall(text))
+        cyrillic = len(self.CYRILLIC_RANGE.findall(text))
+        other = len(text) - arabic - cyrillic
+        return arabic, cyrillic, other
 
-    def has_cyrillic(self, text: str) -> bool:
-        """Check if text contains Cyrillic characters."""
-        return bool(self.CYRILLIC_PATTERN.search(text))
+    def _extract_font_info(self, paragraph) -> FontInfo:
+        """Extract font information from paragraph runs."""
+        info = FontInfo()
 
-    def analyze_paragraph(self, index: int, paragraph) -> ParagraphInfo:
+        if not paragraph.runs:
+            return info
+
+        # Analyze the first significant run (or most common)
+        for run in paragraph.runs:
+            if not run.text.strip():
+                continue
+
+            # Font name
+            if run.font.name:
+                info.name = run.font.name
+                info.is_arabic_font = run.font.name.lower() in self.ARABIC_FONTS
+
+            # Font size
+            if run.font.size:
+                info.size = run.font.size.pt
+
+            # Bold/Italic
+            info.bold = run.font.bold or False
+            info.italic = run.font.italic or False
+
+            # Color
+            if run.font.color and run.font.color.rgb:
+                rgb = run.font.color.rgb
+                info.color_rgb = (rgb[0], rgb[1], rgb[2])
+
+            # Take first significant run's info
+            if info.name:
+                break
+
+        return info
+
+    def _is_red_color(self, rgb: Optional[Tuple[int, int, int]]) -> bool:
+        """Check if color is red-ish."""
+        if not rgb:
+            return False
+        r, g, b = rgb
+        return r > self.RED_THRESHOLD and g < 100 and b < 100
+
+    def _detect_block_type(self, text: str, font_info: FontInfo,
+                           arabic_ratio: float, has_arabic: bool,
+                           has_cyrillic: bool, style_name: str) -> Tuple[BlockType, str]:
         """
-        Analyze a single paragraph.
-
-        Args:
-            index: Paragraph index
-            paragraph: python-docx Paragraph object
+        Detect the type of content block using rules-based logic.
 
         Returns:
-            ParagraphInfo: Analysis results
+            Tuple of (BlockType, reason_string)
+        """
+        text_stripped = text.strip()
+
+        # Empty check
+        if not text_stripped:
+            return BlockType.EMPTY, "Empty paragraph"
+
+        # Check if it's a header (by style)
+        if style_name and 'heading' in style_name.lower():
+            return BlockType.HEADER, f"Style: {style_name}"
+
+        is_red = self._is_red_color(font_info.color_rgb)
+
+        # === AYAH DETECTION ===
+        # Rule 1: Pure Arabic text (>90%) + red color
+        if arabic_ratio > 0.9 and is_red:
+            return BlockType.AYAH, "Pure Arabic + red color"
+
+        # Rule 2: Pure Arabic text (>90%) + Arabic font
+        if arabic_ratio > 0.9 and font_info.is_arabic_font:
+            return BlockType.AYAH, f"Pure Arabic + font: {font_info.name}"
+
+        # Rule 3: Pure Arabic text (>95%) - likely ayah
+        if arabic_ratio > 0.95:
+            return BlockType.AYAH, "Pure Arabic text (>95%)"
+
+        # Rule 4: High Arabic (>80%) + Traditional Arabic font
+        if arabic_ratio > 0.8 and font_info.name and 'arabic' in font_info.name.lower():
+            return BlockType.AYAH, f"High Arabic ratio + {font_info.name}"
+
+        # === TRANSLATION DETECTION ===
+        # Rule: Pure Cyrillic, short, follows ayah pattern
+        if not has_arabic and has_cyrillic:
+            # Short text after ayah is likely translation
+            if len(text_stripped) < 500:
+                return BlockType.TRANSLATION, "Pure Cyrillic, moderate length"
+
+        # === COMMENTARY DETECTION ===
+        # Rule: Cyrillic text (can be mixed with some Arabic terms)
+        if has_cyrillic and arabic_ratio < 0.3:
+            return BlockType.COMMENTARY, f"Cyrillic-dominant ({arabic_ratio:.0%} Arabic)"
+
+        # Mixed but Cyrillic-heavy
+        if has_cyrillic and has_arabic and arabic_ratio < 0.5:
+            return BlockType.COMMENTARY, "Mixed text, Cyrillic-dominant"
+
+        # === REFERENCE DETECTION ===
+        # Patterns like (1:1), [Бухари], numbers
+        ref_patterns = [
+            r'^\s*\[\d+\]',           # [1]
+            r'^\s*\(\d+:\d+\)',       # (1:1)
+            r'^\s*\d+\.\s',           # 1.
+            r'сура|аят|хадис',        # Keywords
+        ]
+        for pattern in ref_patterns:
+            if re.search(pattern, text_stripped.lower()):
+                return BlockType.REFERENCE, f"Matches reference pattern"
+
+        # === FALLBACK ===
+        if has_arabic and not has_cyrillic:
+            return BlockType.AYAH, "Arabic-only (fallback)"
+
+        return BlockType.UNKNOWN, "No matching rules"
+
+    def classify_paragraph(self, index: int, paragraph) -> TafsirBlock:
+        """
+        Classify a single paragraph into a TafsirBlock.
         """
         text = paragraph.text
-        has_ar = self.has_arabic(text)
-        has_cyr = self.has_cyrillic(text)
+        arabic_count, cyrillic_count, _ = self._count_script_chars(text)
+        total_chars = len(text.replace(' ', '').replace('\n', ''))
 
-        return ParagraphInfo(
-            index=index,
-            text=text,
-            style=paragraph.style.name if paragraph.style else None,
-            has_arabic=has_ar,
-            has_cyrillic=has_cyr,
-            is_mixed=has_ar and has_cyr,
-            word_count=len(text.split()) if text else 0,
-            char_count=len(text)
+        has_arabic = arabic_count > 0
+        has_cyrillic = cyrillic_count > 0
+        arabic_ratio = arabic_count / total_chars if total_chars > 0 else 0
+
+        # Extract font info
+        font_info = self._extract_font_info(paragraph)
+
+        # Get style name
+        style_name = paragraph.style.name if paragraph.style else ""
+
+        # Detect block type
+        block_type, detection_reason = self._detect_block_type(
+            text, font_info, arabic_ratio, has_arabic, has_cyrillic, style_name
         )
 
-    def iterate_paragraphs(self) -> Generator[ParagraphInfo, None, None]:
-        """
-        Iterate through all paragraphs with analysis.
+        # Determine if can be processed with AI
+        can_ai = block_type in (BlockType.COMMENTARY, BlockType.TRANSLATION)
+        ai_notes = ""
+        if block_type == BlockType.AYAH:
+            ai_notes = "PROTECTED: Quranic text - no AI modification"
+        elif can_ai:
+            ai_notes = f"Can process: {detection_reason}"
 
-        Yields:
-            ParagraphInfo: Information about each paragraph
-        """
-        if not self.document:
-            raise ValueError("No document loaded. Call load() first.")
+        return TafsirBlock(
+            index=index,
+            block_type=block_type,
+            text=text,
+            has_arabic=has_arabic,
+            has_cyrillic=has_cyrillic,
+            is_mixed=has_arabic and has_cyrillic,
+            arabic_ratio=arabic_ratio,
+            primary_font=font_info.name,
+            font_size=font_info.size,
+            is_bold=font_info.bold,
+            is_italic=font_info.italic,
+            text_color=font_info.color_rgb,
+            is_red_text=self._is_red_color(font_info.color_rgb),
+            can_process_with_ai=can_ai,
+            ai_processing_notes=ai_notes,
+            word_count=len(text.split()) if text else 0,
+            char_count=len(text),
+            _paragraph_ref=paragraph
+        )
 
-        for i, para in enumerate(self.document.paragraphs):
-            yield self.analyze_paragraph(i, para)
-
-    def get_stats(self) -> DocumentStats:
+    def classify_document(self) -> List[TafsirBlock]:
         """
-        Get document statistics.
+        Classify all paragraphs in the document.
 
         Returns:
-            DocumentStats: Statistics about the document
+            List of TafsirBlock objects
         """
         if not self.document:
             raise ValueError("No document loaded. Call load() first.")
+
+        self.blocks = []
+        for i, para in enumerate(self.document.paragraphs):
+            block = self.classify_paragraph(i, para)
+            self.blocks.append(block)
+
+        self._stats = None  # Reset stats cache
+        return self.blocks
+
+    def get_stats(self) -> DocumentStats:
+        """Get classification statistics."""
+        if not self.blocks:
+            self.classify_document()
 
         if self._stats:
             return self._stats
 
-        total_words = 0
-        total_chars = 0
-        arabic_count = 0
-        cyrillic_count = 0
-        mixed_count = 0
-        empty_count = 0
+        stats = DocumentStats()
 
-        for para_info in self.iterate_paragraphs():
-            total_words += para_info.word_count
-            total_chars += para_info.char_count
+        for block in self.blocks:
+            stats.total_blocks += 1
+            stats.total_words += block.word_count
+            stats.total_characters += block.char_count
 
-            if not para_info.text.strip():
-                empty_count += 1
-            elif para_info.is_mixed:
-                mixed_count += 1
-            elif para_info.has_arabic:
-                arabic_count += 1
-            elif para_info.has_cyrillic:
-                cyrillic_count += 1
+            if block.block_type == BlockType.AYAH:
+                stats.ayah_blocks += 1
+            elif block.block_type == BlockType.TRANSLATION:
+                stats.translation_blocks += 1
+            elif block.block_type == BlockType.COMMENTARY:
+                stats.commentary_blocks += 1
+            elif block.block_type == BlockType.HEADER:
+                stats.header_blocks += 1
+            elif block.block_type == BlockType.REFERENCE:
+                stats.reference_blocks += 1
+            elif block.block_type == BlockType.EMPTY:
+                stats.empty_blocks += 1
+            else:
+                stats.unknown_blocks += 1
 
-        self._stats = DocumentStats(
-            total_paragraphs=len(self.document.paragraphs),
-            total_words=total_words,
-            total_characters=total_chars,
-            arabic_paragraphs=arabic_count,
-            cyrillic_paragraphs=cyrillic_count,
-            mixed_paragraphs=mixed_count,
-            empty_paragraphs=empty_count
-        )
+            if block.can_process_with_ai:
+                stats.ai_processable_blocks += 1
+                stats.ai_processable_words += block.word_count
 
-        return self._stats
+        self._stats = stats
+        return stats
 
-    def print_paragraphs(self, limit: Optional[int] = None, show_empty: bool = False):
+    def get_blocks_by_type(self, block_type: BlockType) -> List[TafsirBlock]:
+        """Get all blocks of a specific type."""
+        if not self.blocks:
+            self.classify_document()
+        return [b for b in self.blocks if b.block_type == block_type]
+
+    def get_ai_processable_blocks(self) -> List[TafsirBlock]:
+        """Get all blocks that can be processed with AI."""
+        if not self.blocks:
+            self.classify_document()
+        return [b for b in self.blocks if b.can_process_with_ai]
+
+    def print_classification(self, limit: Optional[int] = None, show_empty: bool = False):
         """
-        Print all paragraphs to console.
-
-        Args:
-            limit: Maximum number of paragraphs to print (None = all)
-            show_empty: Whether to show empty paragraphs
+        Print classified blocks with their types.
         """
-        if not self.document:
-            print("❌ No document loaded. Call load() first.")
-            return
+        if not self.blocks:
+            self.classify_document()
 
-        print(f"\n{'='*60}")
-        print(f"📄 Document: {self.file_path.name}")
-        print(f"{'='*60}\n")
+        print(f"\n{'='*70}")
+        print(f"DOCUMENT CLASSIFICATION: {self.file_path.name}")
+        print(f"{'='*70}\n")
+
+        # Type indicators
+        type_icons = {
+            BlockType.AYAH: "[AYAH]      ",
+            BlockType.TRANSLATION: "[TRANSLATE] ",
+            BlockType.COMMENTARY: "[COMMENTARY]",
+            BlockType.HEADER: "[HEADER]    ",
+            BlockType.REFERENCE: "[REFERENCE] ",
+            BlockType.EMPTY: "[EMPTY]     ",
+            BlockType.UNKNOWN: "[???]       ",
+        }
 
         count = 0
-        for para_info in self.iterate_paragraphs():
-            # Skip empty if not requested
-            if not show_empty and not para_info.text.strip():
+        for block in self.blocks:
+            if not show_empty and block.block_type == BlockType.EMPTY:
                 continue
 
-            # Check limit
             if limit and count >= limit:
-                print(f"\n... (showing {limit} of {len(self.document.paragraphs)} paragraphs)")
+                print(f"\n... (showing {limit} of {len(self.blocks)} blocks)")
                 break
 
-            # Determine script type indicator
-            if para_info.is_mixed:
-                script_indicator = "🔀 [RU+AR]"
-            elif para_info.has_arabic:
-                script_indicator = "🕌 [AR]"
-            elif para_info.has_cyrillic:
-                script_indicator = "🔤 [RU]"
-            else:
-                script_indicator = "📝 [OTHER]"
+            icon = type_icons.get(block.block_type, "[???]")
+            ai_marker = " [AI-OK]" if block.can_process_with_ai else ""
 
-            # Print paragraph
-            print(f"[{para_info.index:4d}] {script_indicator}")
-            print(f"       {para_info.text[:200]}{'...' if len(para_info.text) > 200 else ''}")
+            # Truncate text for display
+            display_text = block.text[:80].replace('\n', ' ')
+            if len(block.text) > 80:
+                display_text += "..."
+
+            print(f"[{block.index:4d}] {icon}{ai_marker}")
+            print(f"       Arabic: {block.arabic_ratio:5.1%} | Font: {block.primary_font or 'default'}")
+            print(f"       {display_text}")
             print()
 
             count += 1
 
-        # Print stats
+        # Print statistics
         stats = self.get_stats()
-        print(f"\n{'='*60}")
-        print("📊 DOCUMENT STATISTICS:")
-        print(f"   Total paragraphs: {stats.total_paragraphs}")
-        print(f"   Total words: {stats.total_words}")
-        print(f"   Total characters: {stats.total_characters}")
-        print(f"   Arabic paragraphs: {stats.arabic_paragraphs}")
-        print(f"   Cyrillic paragraphs: {stats.cyrillic_paragraphs}")
-        print(f"   Mixed paragraphs: {stats.mixed_paragraphs}")
-        print(f"   Empty paragraphs: {stats.empty_paragraphs}")
-        print(f"{'='*60}\n")
+        print(f"\n{'='*70}")
+        print("CLASSIFICATION SUMMARY")
+        print(f"{'='*70}")
+        print(f"""
+  Total blocks:     {stats.total_blocks}
 
-    def find_paragraphs_by_text(self, search_text: str, case_sensitive: bool = False) -> List[ParagraphInfo]:
-        """
-        Find paragraphs containing specific text.
+  By Type:
+    AYAH (Quran):     {stats.ayah_blocks:4d}  <- PROTECTED from AI
+    TRANSLATION:      {stats.translation_blocks:4d}  <- Can process with AI
+    COMMENTARY:       {stats.commentary_blocks:4d}  <- Can process with AI
+    HEADER:           {stats.header_blocks:4d}
+    REFERENCE:        {stats.reference_blocks:4d}
+    EMPTY:            {stats.empty_blocks:4d}
+    UNKNOWN:          {stats.unknown_blocks:4d}
 
-        Args:
-            search_text: Text to search for
-            case_sensitive: Whether search is case-sensitive
-
-        Returns:
-            List of matching ParagraphInfo objects
-        """
-        if not self.document:
-            return []
-
-        results = []
-        for para_info in self.iterate_paragraphs():
-            text = para_info.text if case_sensitive else para_info.text.lower()
-            search = search_text if case_sensitive else search_text.lower()
-
-            if search in text:
-                results.append(para_info)
-
-        return results
-
-    def get_arabic_paragraphs(self) -> List[ParagraphInfo]:
-        """Get all paragraphs containing Arabic text."""
-        return [p for p in self.iterate_paragraphs() if p.has_arabic]
-
-    def get_cyrillic_paragraphs(self) -> List[ParagraphInfo]:
-        """Get all paragraphs containing Cyrillic text."""
-        return [p for p in self.iterate_paragraphs() if p.has_cyrillic]
-
-    def get_mixed_paragraphs(self) -> List[ParagraphInfo]:
-        """Get all paragraphs containing both Arabic and Cyrillic."""
-        return [p for p in self.iterate_paragraphs() if p.is_mixed]
+  AI Processing:
+    Blocks for AI:    {stats.ai_processable_blocks}
+    Words for AI:     {stats.ai_processable_words}
+""")
+        print(f"{'='*70}\n")
 
 
 def create_sample_document(output_path: str = "documents/sample_tafsir.docx"):
-    """
-    Create a sample document for testing.
-
-    Args:
-        output_path: Where to save the sample document
-    """
+    """Create a realistic sample Tafsir document for testing."""
     doc = Document()
 
-    # Add title
-    doc.add_heading('Образец Тафсира - نموذج التفسير', 0)
+    # Title
+    title = doc.add_heading('Тафсир Суры Аль-Фатиха', 0)
 
-    # Add mixed content
+    # Introduction (COMMENTARY)
     doc.add_paragraph(
-        'Во имя Аллаха, Милостивого, Милосердного'
-    )
-    doc.add_paragraph(
-        'بِسْمِ اللَّهِ الرَّحْمَٰنِ الرَّحِيمِ'
-    )
-    doc.add_paragraph(
-        'Сура Аль-Фатиха (الفاتحة) - Открывающая книгу'
-    )
-    doc.add_paragraph(
-        'Аят 1: الْحَمْدُ لِلَّهِ رَبِّ الْعَالَمِينَ'
-    )
-    doc.add_paragraph(
-        'Хвала Аллаху, Господу миров!'
-    )
-    doc.add_paragraph(
-        'Тафсир: Слово "الحمد" (аль-хамд) означает восхваление...'
+        'Сура «Аль-Фатиха» является первой сурой Священного Корана. '
+        'Она называется также «Умм аль-Китаб» (Мать Книги) и «Ас-Сабу аль-Масани» '
+        '(Семь повторяемых). Эта сура занимает особое место в исламе.'
     )
 
-    # Save document
+    # Ayah 1 - Arabic (should be detected as AYAH)
+    ayah1 = doc.add_paragraph('بِسْمِ اللَّهِ الرَّحْمَٰنِ الرَّحِيمِ')
+    # Make it red
+    for run in ayah1.runs:
+        run.font.color.rgb = RGBColor(180, 0, 0)
+
+    # Translation
+    doc.add_paragraph('Во имя Аллаха, Милостивого, Милосердного.')
+
+    # Commentary
+    doc.add_paragraph(
+        'Тафсир: Эти слова являются началом всех благих дел. Мусульманин произносит '
+        '«Бисмиллях» перед едой, перед чтением Корана, перед любым важным делом. '
+        'Слово «Аллах» — это имя Всевышнего Господа, объединяющее все Его прекрасные имена.'
+    )
+
+    # Ayah 2
+    ayah2 = doc.add_paragraph('الْحَمْدُ لِلَّهِ رَبِّ الْعَالَمِينَ')
+    for run in ayah2.runs:
+        run.font.color.rgb = RGBColor(180, 0, 0)
+
+    # Translation
+    doc.add_paragraph('Хвала Аллаху, Господу миров!')
+
+    # Commentary with mixed text
+    doc.add_paragraph(
+        'Слово «الحمد» (аль-хамд) означает восхваление и благодарность. '
+        'Это более полное слово, чем просто «شكر» (шукр — благодарность). '
+        'Господь миров — это Тот, Кто создал и поддерживает всё существующее.'
+    )
+
+    # Reference
+    doc.add_paragraph('[Тафсир ибн Касир, том 1, стр. 25]')
+
+    # More ayahs
+    ayah3 = doc.add_paragraph('الرَّحْمَٰنِ الرَّحِيمِ')
+    for run in ayah3.runs:
+        run.font.color.rgb = RGBColor(180, 0, 0)
+
+    doc.add_paragraph('Милостивого, Милосердного.')
+
+    doc.add_paragraph(
+        'Имена «Ар-Рахман» и «Ар-Рахим» оба происходят от корня «рахма» (милость). '
+        'Ар-Рахман указывает на безграничную милость Аллаха ко всем созданиям, '
+        'а Ар-Рахим — на особую милость к верующим в День Суда.'
+    )
+
+    # Save
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
     doc.save(str(output))
 
-    print(f"✅ Sample document created: {output}")
+    print(f"[OK] Sample document created: {output}")
     return str(output)
 
 
-# Main execution for testing
+# Main execution
 if __name__ == "__main__":
     import sys
 
-    print("🕌 Tafsir Document Processor")
-    print("="*40)
+    print("=" * 50)
+    print("TAFSIR DOCUMENT PROCESSOR")
+    print("Smart Parser with Block Classification")
+    print("=" * 50)
 
-    # Check for command line argument
     if len(sys.argv) > 1:
         file_path = sys.argv[1]
     else:
-        # Create sample if no file provided
         print("\nNo file provided. Creating sample document...")
         file_path = create_sample_document()
 
-    # Process document
     processor = TafsirDocumentProcessor()
 
     if processor.load(file_path):
-        processor.print_paragraphs(limit=20)
+        processor.classify_document()
+        processor.print_classification(limit=30)
 
-        # Demo: Find specific text
-        print("\n🔍 Searching for 'Аллах'...")
-        results = processor.find_paragraphs_by_text("Аллах")
-        print(f"   Found {len(results)} paragraphs")
-        for r in results[:3]:
-            print(f"   [{r.index}]: {r.text[:50]}...")
+        # Show AI-processable summary
+        ai_blocks = processor.get_ai_processable_blocks()
+        print(f"\n[INFO] Found {len(ai_blocks)} blocks ready for AI processing")
