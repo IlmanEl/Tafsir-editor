@@ -21,6 +21,10 @@ class Config:
     # Direct PostgreSQL connection (for DDL)
     DATABASE_URL: str = os.getenv("DATABASE_URL", "")
 
+    # OpenAI settings
+    OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
+    OPENAI_MODEL: str = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+
     # Paths
     BASE_DIR: Path = Path(__file__).parent
     DOCUMENTS_PATH: Path = Path(os.getenv("DOCUMENTS_PATH", "./documents"))

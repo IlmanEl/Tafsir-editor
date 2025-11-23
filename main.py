@@ -7,15 +7,16 @@ Quran Tafsir with mixed Russian-Arabic text.
 
 Features:
 - Smart block classification (AYAH, TRANSLATION, COMMENTARY)
+- AI-powered editing with OpenAI GPT
+- Visual diff in Word (strikethrough old, highlight new)
 - Automatic database setup
-- AI-ready text processing (protects Quranic verses)
 
 Usage:
     python main.py                      # Auto-setup database and run demo
     python main.py --classify <file>    # Classify document blocks
+    python main.py --edit <file>        # AI edit with visual diff (creates copy)
+    python main.py --edit <file> --dry-run  # Preview changes without saving
     python main.py --process <file>     # Process and log to database
-    python main.py --test-connection    # Test database connections
-    python main.py --setup-db           # Create/update database tables
 """
 
 import sys
@@ -45,7 +46,7 @@ def print_banner():
      TAFSIR EDITOR
      --------------
      Smart Document Parser for Quran Tafsir
-     Block Classification + AI-Ready Processing
+     Block Classification + AI-Powered Editing
 ======================================================
 """
     print(banner)
@@ -120,7 +121,6 @@ def drop_database():
 def classify_document(file_path: str):
     """
     Classify document blocks and show detailed analysis.
-    This is the main function for checking block detection accuracy.
     """
     print("\n" + "="*70)
     print("SMART DOCUMENT CLASSIFICATION")
@@ -131,11 +131,8 @@ def classify_document(file_path: str):
     if not processor.load(file_path):
         return False
 
-    # Run classification
     print("\nClassifying blocks...")
     processor.classify_document()
-
-    # Print detailed classification
     processor.print_classification(limit=50)
 
     # Show AI processing summary
@@ -153,8 +150,70 @@ def classify_document(file_path: str):
     - {len(ai_blocks)} blocks (TRANSLATION + COMMENTARY)
     - {sum(b.word_count for b in ai_blocks)} words total
 
-  Next step: Add OpenAI API key and run AI processing on COMMENTARY blocks.
+  To edit with AI: python main.py --edit {file_path}
 """)
+
+    return True
+
+
+def edit_document_with_ai(file_path: str, dry_run: bool = False, max_blocks: int = None):
+    """
+    Edit document using AI with visual diff.
+    Creates a copy with _edited suffix.
+    """
+    # Import here to avoid circular imports
+    from ai_editor import edit_document
+
+    # Check OpenAI key
+    if not config.OPENAI_API_KEY:
+        print("\n[ERROR] OPENAI_API_KEY is not set in .env")
+        print("Add your OpenAI API key to .env file:")
+        print("  OPENAI_API_KEY=sk-...")
+        return False
+
+    # Generate output path
+    input_file = Path(file_path)
+    output_path = str(input_file.parent / f"{input_file.stem}_edited{input_file.suffix}")
+
+    # Run AI editing
+    total, changed, results = edit_document(
+        input_path=file_path,
+        output_path=output_path,
+        max_blocks=max_blocks,
+        dry_run=dry_run
+    )
+
+    if changed > 0 and not dry_run:
+        print(f"""
+  OUTPUT FILE: {output_path}
+
+  The edited document shows changes as:
+    - OLD text: red strikethrough
+    - NEW text: yellow highlight
+
+  Review the changes in Word, then accept/reject as needed.
+""")
+
+    # Log to database
+    if not dry_run and changed > 0:
+        try:
+            client = get_supabase_client()
+            client.table("document_history").insert({
+                "document_name": input_file.name,
+                "document_path": str(file_path),
+                "action": "ai_edited",
+                "description": f"AI editing: {changed} blocks modified out of {total}",
+                "changes_json": {
+                    "total_processed": total,
+                    "total_changed": changed,
+                    "model": config.OPENAI_MODEL,
+                    "output_file": output_path
+                },
+                "paragraphs_affected": changed,
+            }).execute()
+            print("[OK] Edit session logged to database")
+        except Exception as e:
+            print(f"[WARN] Could not log to database: {e}")
 
     return True
 
@@ -170,7 +229,6 @@ def process_document(file_path: str):
     if not processor.load(file_path):
         return False
 
-    # Classify and display
     processor.classify_document()
     processor.print_classification(limit=20)
 
@@ -209,23 +267,36 @@ def run_demo():
     print("RUNNING DEMO")
     print("="*50 + "\n")
 
-    # Create sample document
     print("Creating sample Tafsir document...")
     sample_path = create_sample_document()
-
-    # Classify it
     classify_document(sample_path)
 
 
 def main():
     """Main entry point."""
     parser = argparse.ArgumentParser(
-        description="Tafsir Editor - Smart Document Parser for Quran Tafsir"
+        description="Tafsir Editor - Smart Document Parser with AI Editing"
     )
     parser.add_argument(
         "--classify",
         metavar="FILE",
         help="Classify document blocks (check AYAH vs COMMENTARY detection)"
+    )
+    parser.add_argument(
+        "--edit",
+        metavar="FILE",
+        help="AI edit document with visual diff (creates _edited copy)"
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Preview AI changes without saving (use with --edit)"
+    )
+    parser.add_argument(
+        "--max-blocks",
+        type=int,
+        metavar="N",
+        help="Limit AI processing to N blocks (for testing)"
     )
     parser.add_argument(
         "--process",
@@ -282,6 +353,17 @@ def main():
         classify_document(args.classify)
         return
 
+    if args.edit:
+        if not Path(args.edit).exists():
+            print(f"File not found: {args.edit}")
+            sys.exit(1)
+        edit_document_with_ai(
+            args.edit,
+            dry_run=args.dry_run,
+            max_blocks=args.max_blocks
+        )
+        return
+
     if args.process:
         if not Path(args.process).exists():
             print(f"File not found: {args.process}")
@@ -298,26 +380,22 @@ def main():
     # ===========================================
     print("Running automatic setup...\n")
 
-    # Step 1: Validate configuration
     print("Step 1/4: Validating configuration...")
     if not config.validate():
         print("\nPlease create .env file with your credentials.")
         print("See .env.example for reference.")
         sys.exit(1)
 
-    # Step 2: Test connections
     print("\nStep 2/4: Testing database connections...")
     if not test_all_connections():
         print("\nFix connection issues before continuing.")
         sys.exit(1)
 
-    # Step 3: Setup database (auto-create tables)
     print("\nStep 3/4: Setting up database...")
     if not setup_database():
         print("\nDatabase setup failed.")
         sys.exit(1)
 
-    # Step 4: Run demo with classification
     print("\nStep 4/4: Running demo with smart classification...")
     run_demo()
 
@@ -327,23 +405,22 @@ def main():
     print("""
 Your Tafsir Editor is ready!
 
-Block Types Detected:
+Block Types:
   [AYAH]       - Quranic verses (PROTECTED from AI)
   [TRANSLATE]  - Russian translations (can process with AI)
   [COMMENTARY] - Tafsir text (can process with AI)
-  [HEADER]     - Section headers
-  [REFERENCE]  - Citations and references
 
 Commands:
-  python main.py --classify FILE     # Check block classification
-  python main.py --process FILE      # Process and log to DB
-  python main.py --demo              # Run demo
+  python main.py --classify FILE       # Check block classification
+  python main.py --edit FILE           # AI edit with visual diff
+  python main.py --edit FILE --dry-run # Preview changes only
+  python main.py --process FILE        # Log to database
 
-Next steps:
-  1. Place your .docx files in 'documents/' folder
-  2. Run: python main.py --classify documents/your_file.docx
-  3. Verify AYAH blocks are correctly detected
-  4. Add OpenAI API key for AI processing (coming next)
+AI Editing:
+  1. Add OPENAI_API_KEY to .env
+  2. Run: python main.py --edit documents/your_file.docx
+  3. Open the _edited.docx file to review changes
+  4. Changes shown as: [strikethrough old] -> [highlighted new]
 """)
 
 
