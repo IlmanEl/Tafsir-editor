@@ -2,12 +2,13 @@
 AI Editor Module for Tafsir Documents.
 Uses OpenAI GPT to improve COMMENTARY and TRANSLATION blocks.
 Implements visual diff in Word documents (strikethrough + highlight).
+Adds beautiful Unicode brackets for Quranic verses.
 """
 
 from typing import Optional, List, Tuple
 from dataclasses import dataclass
 from pathlib import Path
-import copy
+import re
 
 from openai import OpenAI
 from docx import Document
@@ -18,23 +19,79 @@ from config import config
 from document_processor import TafsirDocumentProcessor, TafsirBlock, BlockType
 
 
-# System prompt for the AI editor
-SYSTEM_PROMPT = """Ты профессиональный редактор исламской литературы (Тафсир) на русском языке.
+def get_system_prompt() -> str:
+    """
+    Get the system prompt for AI editor with strict transliteration rules.
+    """
+    return """Ты профессиональный редактор исламской литературы (Тафсир) на русском языке.
 
 ТВОЯ ЗАДАЧА:
 1. Исправь грамматические и пунктуационные ошибки
 2. Улучши стиль текста, сделай его более литературным и уважительным
 3. Сохрани академический тон, подходящий для религиозной литературы
 
-СТРОГИЕ ПРАВИЛА:
+СТРОГИЕ ПРАВИЛА ТРАНСЛИТЕРАЦИИ АРАБСКИХ БУКВ:
+⚠️ КРИТИЧЕСКИ ВАЖНО! НЕ МЕНЯЙ ЭТИ БУКВЫ:
+
+- Буква 'h' (латинская) = ТОЛЬКО арабская 'ه' (ха)
+  Примеры: Аллаh, Умм hани, Мухаммад ﷺ
+  ЗАПРЕЩЕНО менять 'h' на 'х' (русскую)!
+
+- Буква 'х' (русская) = арабская 'ح' (ха с точкой)
+  Примеры: хадис, хадж, Рахман
+
+- Буква 'г' = арабская 'غ' (гайн)
+  Примеры: Магриб, Багдад
+
+- Буква 'с̱' (межзубная) = арабская 'ث' (са)
+  Пример: с̱икр (поминание)
+
+- Буква 'з̱' (межзубная) = арабская 'ذ' (заль)
+  Пример: з̱икр (вариант)
+
+- Символ 'ʻ' (айн) = арабская 'ع'
+  Примеры: ʻАрафат, ʻАббас
+
+- Символ ''' (апостроф-хамза) = арабская 'ء'
+  Примеры: Му'мин, Ка'ба
+
+РЕЛИГИОЗНЫЕ ТЕРМИНЫ:
+- Имя Бога: ТОЛЬКО «Аллаh» (с латинской 'h' в конце)
+- Имена пророков: с заглавной буквы и уважительным тоном
+- Символ ﷺ (صلى الله عليه وسلم) ОСТАВЛЯЙ БЕЗ ИЗМЕНЕНИЙ
+- Арабские слова в скобках НЕ ТРОГАЙ: «الحمد» или (аль-хамд)
+
+ОБЩИЕ ПРАВИЛА:
 - НЕ меняй богословский смысл текста
-- НЕ удаляй и НЕ изменяй арабские слова/фразы в скобках (например: «الحمد» или (аль-хамд))
+- НЕ удаляй и НЕ изменяй арабские слова/фразы
 - НЕ добавляй новую информацию от себя
 - Сохраняй все цитаты и ссылки без изменений
-- Если текст уже хорош — верни его без изменений
+- Если текст уже хорош и без ошибок — верни его БЕЗ ИЗМЕНЕНИЙ
 
 ФОРМАТ ОТВЕТА:
 Верни ТОЛЬКО исправленный текст, без комментариев и пояснений."""
+
+
+def add_ayah_brackets(text: str) -> str:
+    """
+    Wrap Arabic ayah text in beautiful Unicode Quranic brackets.
+
+    Uses: ﴿ (U+FD3F) at start and ﴾ (U+FD3E) at end.
+
+    Args:
+        text: Arabic text (ayah)
+
+    Returns:
+        Text wrapped in ﴿﴾ brackets
+    """
+    text = text.strip()
+
+    # Remove existing brackets if any
+    text = text.strip('﴿﴾')
+    text = text.strip()
+
+    # Add beautiful Quranic brackets
+    return f"\ufd3f {text} \ufd3e"
 
 
 @dataclass
@@ -96,10 +153,10 @@ class TafsirAIEditor:
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "system", "content": get_system_prompt()},
                     {"role": "user", "content": text}
                 ],
-                temperature=0.3,  # Low temperature for consistent editing
+                temperature=0.2,  # Low temperature for maximum precision
                 max_tokens=len(text) * 2 + 500,  # Allow some expansion
             )
 
@@ -147,6 +204,7 @@ class VisualDiffWriter:
     Creates Word documents with visual diff.
     Old text: strikethrough
     New text: yellow highlight
+    Also adds beautiful brackets to ayahs.
     """
 
     def __init__(self, source_path: str):
@@ -158,6 +216,36 @@ class VisualDiffWriter:
         """
         self.source_path = Path(source_path)
         self.document = Document(str(source_path))
+
+    def apply_ayah_brackets(self, paragraph_index: int, text: str) -> bool:
+        """
+        Apply beautiful Unicode brackets to an ayah paragraph.
+
+        Args:
+            paragraph_index: Index of paragraph
+            text: Arabic text of ayah
+
+        Returns:
+            bool: True if successfully applied
+        """
+        if paragraph_index >= len(self.document.paragraphs):
+            return False
+
+        paragraph = self.document.paragraphs[paragraph_index]
+
+        # Clear existing content
+        paragraph.clear()
+
+        # Add bracketed ayah
+        bracketed = add_ayah_brackets(text)
+        run = paragraph.add_run(bracketed)
+
+        # Style the ayah nicely
+        run.font.size = Pt(16)
+        run.font.color.rgb = RGBColor(139, 0, 0)  # Dark red
+        run.font.bold = False
+
+        return True
 
     def apply_visual_diff(self, paragraph_index: int, original: str, edited: str) -> bool:
         """
@@ -184,7 +272,6 @@ class VisualDiffWriter:
         for run in paragraph.runs:
             run.text = ""
 
-        # If paragraph has no runs, we need to work with the paragraph directly
         # Clear and rebuild
         paragraph.clear()
 
@@ -205,18 +292,21 @@ class VisualDiffWriter:
 
         return True
 
-    def apply_edits(self, edit_results: List[EditResult]) -> int:
+    def apply_edits(self, edit_results: List[EditResult], ayah_blocks: List[TafsirBlock] = None) -> int:
         """
         Apply all edits to the document with visual diff.
+        Also applies beautiful brackets to ayahs.
 
         Args:
             edit_results: List of EditResult objects
+            ayah_blocks: List of AYAH blocks to beautify
 
         Returns:
             int: Number of paragraphs modified
         """
         modified_count = 0
 
+        # Apply AI edits with visual diff
         for result in edit_results:
             if result.was_changed and not result.error:
                 success = self.apply_visual_diff(
@@ -226,6 +316,11 @@ class VisualDiffWriter:
                 )
                 if success:
                     modified_count += 1
+
+        # Apply beautiful brackets to ayahs
+        if ayah_blocks:
+            for ayah in ayah_blocks:
+                self.apply_ayah_brackets(ayah.index, ayah.text)
 
         return modified_count
 
@@ -258,6 +353,7 @@ def edit_document(
 ) -> Tuple[int, int, List[EditResult]]:
     """
     Main function to edit a Tafsir document using AI.
+    Also adds beautiful brackets to ayahs.
 
     Args:
         input_path: Path to input .docx file
@@ -296,18 +392,21 @@ def edit_document(
 
     processor.classify_document()
 
-    # Get AI-processable blocks
+    # Get blocks
     ai_blocks = processor.get_ai_processable_blocks()
+    ayah_blocks = processor.get_blocks_by_type(BlockType.AYAH)
+
     if max_blocks:
         ai_blocks = ai_blocks[:max_blocks]
 
-    print(f"  Found {len(ai_blocks)} blocks for AI processing\n")
+    print(f"  Found {len(ai_blocks)} blocks for AI processing")
+    print(f"  Found {len(ayah_blocks)} ayah blocks (will add beautiful brackets)\n")
 
-    if not ai_blocks:
+    if not ai_blocks and not ayah_blocks:
         print("[INFO] No blocks to process")
         return 0, 0, []
 
-    # Process blocks
+    # Process AI-editable blocks
     results: List[EditResult] = []
     total_changed = 0
 
@@ -329,12 +428,14 @@ def edit_document(
     print(f"\n  Processed: {len(results)}, Changed: {total_changed}")
 
     # Apply changes to document
-    if not dry_run and total_changed > 0:
-        print("\n  Applying visual diff to document...")
+    if not dry_run and (total_changed > 0 or ayah_blocks):
+        print("\n  Applying changes to document...")
         writer = VisualDiffWriter(input_path)
-        modified = writer.apply_edits(results)
+        modified = writer.apply_edits(results, ayah_blocks)
         writer.save(output_path)
         print(f"\n  [OK] {modified} paragraphs modified with visual diff")
+        if ayah_blocks:
+            print(f"  [OK] {len(ayah_blocks)} ayahs beautified with ﴿﴾ brackets")
 
     # Show sample changes
     if total_changed > 0:
