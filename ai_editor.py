@@ -25,7 +25,11 @@ def get_system_prompt() -> str:
     """
     return """Ты профессиональный редактор исламской литературы (Тафсир) на русском языке.
 
-ТВОЯ ЗАДАЧА:
+КРИТИЧЕСКИ ВАЖНО:
+⚠️ ЕСЛИ ТЕКСТ ГРАММАТИЧЕСКИ ВЕРЕН И ПОНЯТЕН — ВЕРНИ ТОЛЬКО ОДНО СЛОВО: "ORIGINAL"
+⚠️ НЕ ПЫТАЙСЯ УЛУЧШИТЬ СТИЛЬ, ЕСЛИ НЕТ ГРУБЫХ ОШИБОК!
+
+ТВОЯ ЗАДАЧА (только если есть ошибки):
 1. Исправь грамматические и пунктуационные ошибки
 2. Улучши стиль текста, сделай его более литературным и уважительным
 3. Сохрани академический тон, подходящий для религиозной литературы
@@ -66,15 +70,16 @@ def get_system_prompt() -> str:
 - НЕ удаляй и НЕ изменяй арабские слова/фразы
 - НЕ добавляй новую информацию от себя
 - Сохраняй все цитаты и ссылки без изменений
-- Если текст уже хорош и без ошибок — верни его БЕЗ ИЗМЕНЕНИЙ
 
 ФОРМАТ ОТВЕТА:
-Верни ТОЛЬКО исправленный текст, без комментариев и пояснений."""
+- Если текст хорош — верни: ORIGINAL
+- Если есть ошибки — верни ТОЛЬКО исправленный текст, без комментариев"""
 
 
 def add_ayah_brackets(text: str) -> str:
     """
     Wrap Arabic ayah text in beautiful Unicode Quranic brackets.
+    Removes all existing quotes before adding brackets.
 
     Uses: ﴿ (U+FD3F) at start and ﴾ (U+FD3E) at end.
 
@@ -86,8 +91,11 @@ def add_ayah_brackets(text: str) -> str:
     """
     text = text.strip()
 
-    # Remove existing brackets if any
+    # Remove existing brackets and quotes
     text = text.strip('﴿﴾')
+    text = text.replace('«', '').replace('»', '')
+    text = text.replace('"', '').replace('"', '').replace('"', '')
+    text = text.replace("'", '').replace("'", '').replace("'", '')
     text = text.strip()
 
     # Add beautiful Quranic brackets
@@ -102,6 +110,7 @@ class EditResult:
     edited_text: str
     was_changed: bool
     error: Optional[str] = None
+    skipped_original: bool = False  # True if AI returned "ORIGINAL"
 
 
 class TafsirAIEditor:
@@ -187,6 +196,17 @@ class TafsirAIEditor:
 
         edited_text, error = self.edit_text(block.text)
 
+        # Check if AI returned "ORIGINAL" (text is already good)
+        if edited_text.strip().upper() == "ORIGINAL":
+            return EditResult(
+                block_index=block.index,
+                original_text=block.text,
+                edited_text=block.text,
+                was_changed=False,
+                error=None,
+                skipped_original=True
+            )
+
         # Check if text actually changed
         was_changed = edited_text.strip() != block.text.strip()
 
@@ -236,7 +256,7 @@ class VisualDiffWriter:
         # Clear existing content
         paragraph.clear()
 
-        # Add bracketed ayah
+        # Add bracketed ayah (quotes will be removed by add_ayah_brackets)
         bracketed = add_ayah_brackets(text)
         run = paragraph.add_run(bracketed)
 
@@ -306,9 +326,9 @@ class VisualDiffWriter:
         """
         modified_count = 0
 
-        # Apply AI edits with visual diff
+        # Apply AI edits with visual diff (skip ORIGINAL blocks)
         for result in edit_results:
-            if result.was_changed and not result.error:
+            if result.was_changed and not result.error and not result.skipped_original:
                 success = self.apply_visual_diff(
                     result.block_index,
                     result.original_text,
@@ -409,6 +429,7 @@ def edit_document(
     # Process AI-editable blocks
     results: List[EditResult] = []
     total_changed = 0
+    total_skipped = 0
 
     for i, block in enumerate(ai_blocks):
         block_type = "COMMENTARY" if block.block_type == BlockType.COMMENTARY else "TRANSLATION"
@@ -419,13 +440,16 @@ def edit_document(
 
         if result.error:
             print(f"ERROR: {result.error}")
+        elif result.skipped_original:
+            print("ORIGINAL (already good)")
+            total_skipped += 1
         elif result.was_changed:
             print("CHANGED")
             total_changed += 1
         else:
             print("no changes")
 
-    print(f"\n  Processed: {len(results)}, Changed: {total_changed}")
+    print(f"\n  Processed: {len(results)}, Changed: {total_changed}, Skipped (ORIGINAL): {total_skipped}")
 
     # Apply changes to document
     if not dry_run and (total_changed > 0 or ayah_blocks):
@@ -445,7 +469,7 @@ def edit_document(
 
         shown = 0
         for result in results:
-            if result.was_changed and shown < 3:
+            if result.was_changed and not result.skipped_original and shown < 3:
                 print(f"\n  Block #{result.block_index}:")
                 print(f"  OLD: {result.original_text[:100]}...")
                 print(f"  NEW: {result.edited_text[:100]}...")
