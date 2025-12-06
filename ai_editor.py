@@ -1,7 +1,6 @@
 from typing import Optional, List, Tuple
 from dataclasses import dataclass
 from pathlib import Path
-import re
 import difflib
 
 from openai import OpenAI
@@ -408,9 +407,8 @@ class VisualDiffWriter:
 
             # Add space before (except first operation)
             if i > 0 and op.operation != 'equal':
-                # Check if previous operation was also non-equal
                 if diff_ops[i-1].operation != 'equal':
-                    space_run = paragraph.add_run(" ")
+                    paragraph.add_run(" ")
 
             if op.operation == 'equal':
                 # Unchanged words: normal black text
