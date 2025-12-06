@@ -13,10 +13,6 @@ from document_processor import TafsirDocumentProcessor, TafsirBlock, BlockType
 
 
 def get_system_prompt() -> str:
-    """
-    Get the system prompt for AI corrector (NOT editor) with strict rules.
-    Uses few-shot examples to prevent aggressive rewriting.
-    """
     return """Ты корректор (НЕ редактор!) текстов тафсира на русском языке.
 
 ⚠️ КРИТИЧЕСКИ ВАЖНО:
@@ -110,54 +106,31 @@ Output: ORIGINAL
 
 
 def clean_ayah_text(text: str) -> str:
-    """
-    Remove all quotes and existing brackets from ayah text.
-    Does NOT add new brackets (this is done by apply_ayah_brackets).
-
-    Args:
-        text: Arabic text (ayah)
-
-    Returns:
-        Cleaned text without quotes and brackets
-    """
     text = text.strip()
-
-    # Remove existing brackets
     text = text.strip('﴿﴾')
-
-    # Remove quotes
     text = text.replace('«', '').replace('»', '')
     text = text.replace('"', '').replace('"', '').replace('"', '')
     text = text.replace("'", '').replace("'", '').replace("'", '')
-
     return text.strip()
 
 
 @dataclass
 class EditResult:
-    """Result of AI editing for a single block."""
     block_index: int
     original_text: str
     edited_text: str
     was_changed: bool
     error: Optional[str] = None
-    skipped_original: bool = False  # True if AI returned "ORIGINAL"
+    skipped_original: bool = False
 
 
 class TafsirAIEditor:
-    """
-    AI-powered corrector (NOT editor) for Tafsir documents.
-    Uses OpenAI to fix errors while preserving original style and Quranic content.
-    """
-
     def __init__(self):
-        """Initialize the AI corrector."""
         self.client: Optional[OpenAI] = None
         self.model = config.OPENAI_MODEL
         self._init_client()
 
     def _init_client(self) -> bool:
-        """Initialize OpenAI client."""
         if not config.OPENAI_API_KEY:
             print("[ERROR] OPENAI_API_KEY is not set in .env")
             return False
@@ -170,19 +143,9 @@ class TafsirAIEditor:
             return False
 
     def is_ready(self) -> bool:
-        """Check if the corrector is ready to use."""
         return self.client is not None
 
     def edit_text(self, text: str) -> Tuple[str, Optional[str]]:
-        """
-        Send text to OpenAI for correction (NOT rewriting).
-
-        Args:
-            text: Original text to correct
-
-        Returns:
-            Tuple of (corrected_text, error_message)
-        """
         if not self.client:
             return text, "OpenAI client not initialized"
 
@@ -196,8 +159,8 @@ class TafsirAIEditor:
                     {"role": "system", "content": get_system_prompt()},
                     {"role": "user", "content": text}
                 ],
-                temperature=0.1,  # Very low temperature for minimal creativity
-                max_tokens=len(text) * 2 + 500,  # Allow some expansion
+                temperature=0.1,
+                max_tokens=len(text) * 2 + 500,
             )
 
             edited = response.choices[0].message.content.strip()
@@ -207,15 +170,6 @@ class TafsirAIEditor:
             return text, f"OpenAI API error: {str(e)}"
 
     def edit_block(self, block: TafsirBlock) -> EditResult:
-        """
-        Correct a single block using AI.
-
-        Args:
-            block: TafsirBlock to correct
-
-        Returns:
-            EditResult with original and corrected text
-        """
         if not block.can_process_with_ai:
             return EditResult(
                 block_index=block.index,
@@ -227,7 +181,6 @@ class TafsirAIEditor:
 
         edited_text, error = self.edit_text(block.text)
 
-        # Check if AI returned "ORIGINAL" (text is already good)
         if edited_text.strip().upper() == "ORIGINAL":
             return EditResult(
                 block_index=block.index,
@@ -238,7 +191,6 @@ class TafsirAIEditor:
                 skipped_original=True
             )
 
-        # Check if text actually changed
         was_changed = edited_text.strip() != block.text.strip()
 
         return EditResult(
@@ -252,67 +204,36 @@ class TafsirAIEditor:
 
 @dataclass
 class DiffOperation:
-    """Represents a single diff operation for word-level comparison."""
-    operation: str  # 'equal', 'delete', 'insert', 'replace'
+    operation: str
     text: str
 
 
 class VisualDiffWriter:
-    """
-    Creates Word documents with surgical word-level diff.
-    - Deleted words: red strikethrough
-    - Inserted words: yellow highlight
-    - Unchanged words: normal black text (no formatting)
-    Also adds beautiful brackets to ayahs with proper font rendering.
-    """
-
     def __init__(self, source_path: str):
-        """
-        Initialize with source document.
-
-        Args:
-            source_path: Path to original .docx file
-        """
         self.source_path = Path(source_path)
         self.document = Document(str(source_path))
 
     def _compute_word_diff(self, old_text: str, new_text: str) -> List[DiffOperation]:
-        """
-        Compute word-level diff using difflib.
-
-        Args:
-            old_text: Original text
-            new_text: Edited text
-
-        Returns:
-            List of DiffOperation objects
-        """
-        # Split into words (preserve spaces)
         old_words = old_text.split()
         new_words = new_text.split()
 
-        # Use difflib.SequenceMatcher for word-level comparison
         matcher = difflib.SequenceMatcher(None, old_words, new_words)
         operations = []
 
         for tag, i1, i2, j1, j2 in matcher.get_opcodes():
             if tag == 'equal':
-                # Unchanged words
                 text = ' '.join(old_words[i1:i2])
                 operations.append(DiffOperation('equal', text))
 
             elif tag == 'delete':
-                # Deleted words (only in old)
                 text = ' '.join(old_words[i1:i2])
                 operations.append(DiffOperation('delete', text))
 
             elif tag == 'insert':
-                # Inserted words (only in new)
                 text = ' '.join(new_words[j1:j2])
                 operations.append(DiffOperation('insert', text))
 
             elif tag == 'replace':
-                # Replaced words: show as delete + insert
                 if i1 < i2:
                     old_part = ' '.join(old_words[i1:i2])
                     operations.append(DiffOperation('delete', old_part))
@@ -323,43 +244,26 @@ class VisualDiffWriter:
         return operations
 
     def apply_ayah_brackets(self, paragraph_index: int, text: str) -> bool:
-        """
-        Apply beautiful Unicode brackets to an ayah paragraph.
-        Creates separate runs for each bracket with explicit "Traditional Arabic" font.
-
-        Args:
-            paragraph_index: Index of paragraph
-            text: Arabic text of ayah
-
-        Returns:
-            bool: True if successfully applied
-        """
         if paragraph_index >= len(self.document.paragraphs):
             return False
 
         paragraph = self.document.paragraphs[paragraph_index]
-
-        # Clear existing content
         paragraph.clear()
 
-        # Clean the text (remove existing quotes/brackets)
         cleaned_text = clean_ayah_text(text)
 
-        # 1. Opening bracket ﴿
         opening_run = paragraph.add_run("\ufd3f ")
         opening_run.font.name = "Traditional Arabic"
         opening_run.font.size = Pt(16)
-        opening_run.font.color.rgb = RGBColor(139, 0, 0)  # Dark red
+        opening_run.font.color.rgb = RGBColor(139, 0, 0)
         opening_run.font.bold = False
 
-        # 2. Arabic text
         text_run = paragraph.add_run(cleaned_text)
         text_run.font.name = "Traditional Arabic"
         text_run.font.size = Pt(16)
         text_run.font.color.rgb = RGBColor(139, 0, 0)
         text_run.font.bold = False
 
-        # 3. Closing bracket ﴾
         closing_run = paragraph.add_run(" \ufd3e")
         closing_run.font.name = "Traditional Arabic"
         closing_run.font.size = Pt(16)
@@ -369,65 +273,38 @@ class VisualDiffWriter:
         return True
 
     def apply_visual_diff(self, paragraph_index: int, original: str, edited: str) -> bool:
-        """
-        Apply surgical word-level visual diff to a paragraph.
-        Uses difflib to show only changed words.
-
-        Format:
-        - Deleted words: red strikethrough
-        - Inserted words: yellow highlight
-        - Unchanged words: normal black text
-
-        Args:
-            paragraph_index: Index of paragraph to modify
-            original: Original text
-            edited: Edited text
-
-        Returns:
-            bool: True if successfully applied
-        """
         if paragraph_index >= len(self.document.paragraphs):
             return False
 
         if original.strip() == edited.strip():
-            return False  # No changes
+            return False
 
         paragraph = self.document.paragraphs[paragraph_index]
-
-        # Clear paragraph
         paragraph.clear()
 
-        # Compute word-level diff
         diff_ops = self._compute_word_diff(original, edited)
 
-        # Apply each operation as a separate run
         for i, op in enumerate(diff_ops):
             if not op.text:
                 continue
 
-            # Add space before (except first operation)
             if i > 0 and op.operation != 'equal':
                 if diff_ops[i-1].operation != 'equal':
                     paragraph.add_run(" ")
 
             if op.operation == 'equal':
-                # Unchanged words: normal black text
-                run = paragraph.add_run(op.text)
-                # No special formatting
+                paragraph.add_run(op.text)
 
             elif op.operation == 'delete':
-                # Deleted words: red strikethrough
                 run = paragraph.add_run(op.text)
                 run.font.strike = True
-                run.font.color.rgb = RGBColor(180, 0, 0)  # Dark red
+                run.font.color.rgb = RGBColor(180, 0, 0)
 
             elif op.operation == 'insert':
-                # Inserted words: yellow highlight
                 run = paragraph.add_run(op.text)
                 run.font.highlight_color = WD_COLOR_INDEX.YELLOW
-                run.font.color.rgb = RGBColor(0, 100, 0)  # Dark green
+                run.font.color.rgb = RGBColor(0, 100, 0)
 
-            # Add space after word (except for last operation)
             if i < len(diff_ops) - 1:
                 next_op = diff_ops[i + 1]
                 if next_op.operation == 'equal':
@@ -436,20 +313,8 @@ class VisualDiffWriter:
         return True
 
     def apply_edits(self, edit_results: List[EditResult], ayah_blocks: List[TafsirBlock] = None) -> int:
-        """
-        Apply all edits to the document with surgical word-level diff.
-        Also applies beautiful brackets to ayahs.
-
-        Args:
-            edit_results: List of EditResult objects
-            ayah_blocks: List of AYAH blocks to beautify
-
-        Returns:
-            int: Number of paragraphs modified
-        """
         modified_count = 0
 
-        # Apply AI corrections with word-level diff (skip ORIGINAL blocks)
         for result in edit_results:
             if result.was_changed and not result.error and not result.skipped_original:
                 success = self.apply_visual_diff(
@@ -460,7 +325,6 @@ class VisualDiffWriter:
                 if success:
                     modified_count += 1
 
-        # Apply beautiful brackets to ayahs
         if ayah_blocks:
             for ayah in ayah_blocks:
                 self.apply_ayah_brackets(ayah.index, ayah.text)
@@ -468,15 +332,6 @@ class VisualDiffWriter:
         return modified_count
 
     def save(self, output_path: str) -> bool:
-        """
-        Save the modified document.
-
-        Args:
-            output_path: Path for output file
-
-        Returns:
-            bool: True if saved successfully
-        """
         try:
             output = Path(output_path)
             output.parent.mkdir(parents=True, exist_ok=True)
@@ -494,20 +349,6 @@ def edit_document(
     max_blocks: Optional[int] = None,
     dry_run: bool = False
 ) -> Tuple[int, int, List[EditResult]]:
-    """
-    Main function to correct a Tafsir document using AI.
-    Uses surgical word-level diff and adds beautiful brackets to ayahs.
-
-    Args:
-        input_path: Path to input .docx file
-        output_path: Path for output file (default: input_edited.docx)
-        max_blocks: Maximum number of blocks to process (for testing)
-        dry_run: If True, only show what would be changed without saving
-
-    Returns:
-        Tuple of (total_processed, total_changed, list of EditResults)
-    """
-    # Generate output path if not provided
     if not output_path:
         input_file = Path(input_path)
         output_path = str(input_file.parent / f"{input_file.stem}_edited{input_file.suffix}")
@@ -522,20 +363,17 @@ def edit_document(
         print("  Mode:   DRY RUN (no changes will be saved)")
     print()
 
-    # Initialize AI corrector
     editor = TafsirAIEditor()
     if not editor.is_ready():
         print("[ERROR] AI corrector not ready. Check OPENAI_API_KEY in .env")
         return 0, 0, []
 
-    # Load and classify document
     processor = TafsirDocumentProcessor()
     if not processor.load(input_path):
         return 0, 0, []
 
     processor.classify_document()
 
-    # Get blocks
     ai_blocks = processor.get_ai_processable_blocks()
     ayah_blocks = processor.get_blocks_by_type(BlockType.AYAH)
 
@@ -549,7 +387,6 @@ def edit_document(
         print("[INFO] No blocks to process")
         return 0, 0, []
 
-    # Process AI-correctable blocks
     results: List[EditResult] = []
     total_changed = 0
     total_skipped = 0
@@ -574,7 +411,6 @@ def edit_document(
 
     print(f"\n  Processed: {len(results)}, Changed: {total_changed}, Skipped (ORIGINAL): {total_skipped}")
 
-    # Apply changes to document
     if not dry_run and (total_changed > 0 or ayah_blocks):
         print("\n  Applying surgical word-level diff to document...")
         writer = VisualDiffWriter(input_path)
@@ -584,7 +420,6 @@ def edit_document(
         if ayah_blocks:
             print(f"  [OK] {len(ayah_blocks)} ayahs beautified with ﴿﴾ brackets (Traditional Arabic font)")
 
-    # Show sample changes
     if total_changed > 0:
         print("\n" + "-" * 70)
         print("SAMPLE CHANGES:")

@@ -1,16 +1,3 @@
-"""
-Document Processor for Tafsir Word files.
-Handles reading, parsing, and smart classification of .docx files
-with mixed Russian-Arabic text.
-
-Block Types:
-- AYAH: Quranic verses (Arabic text, typically red or special font)
-- TRANSLATION: Russian translation of ayahs
-- COMMENTARY: Tafsir/explanation text (for AI processing)
-- HEADER: Section headers, titles
-- UNKNOWN: Unclassified content
-"""
-
 import re
 from enum import Enum
 from pathlib import Path
@@ -24,19 +11,17 @@ from config import config
 
 
 class BlockType(Enum):
-    """Types of content blocks in Tafsir documents."""
-    AYAH = "ayah"              # Quranic verse (Arabic) - DO NOT process with AI
-    TRANSLATION = "translation" # Russian translation of ayah
-    COMMENTARY = "commentary"   # Tafsir text - CAN be processed with AI
-    HEADER = "header"          # Section headers
-    REFERENCE = "reference"    # References, citations
-    EMPTY = "empty"            # Empty paragraphs
-    UNKNOWN = "unknown"        # Unclassified
+    AYAH = "ayah"
+    TRANSLATION = "translation"
+    COMMENTARY = "commentary"
+    HEADER = "header"
+    REFERENCE = "reference"
+    EMPTY = "empty"
+    UNKNOWN = "unknown"
 
 
 @dataclass
 class FontInfo:
-    """Font information extracted from a run."""
     name: Optional[str] = None
     size: Optional[float] = None
     bold: bool = False
@@ -47,20 +32,15 @@ class FontInfo:
 
 @dataclass
 class TafsirBlock:
-    """
-    A classified block of content from a Tafsir document.
-    """
     index: int
     block_type: BlockType
     text: str
 
-    # Script detection
     has_arabic: bool = False
     has_cyrillic: bool = False
     is_mixed: bool = False
-    arabic_ratio: float = 0.0  # Percentage of Arabic characters
+    arabic_ratio: float = 0.0
 
-    # Font/style info
     primary_font: Optional[str] = None
     font_size: Optional[float] = None
     is_bold: bool = False
@@ -68,21 +48,17 @@ class TafsirBlock:
     text_color: Optional[Tuple[int, int, int]] = None
     is_red_text: bool = False
 
-    # For AI processing
     can_process_with_ai: bool = False
     ai_processing_notes: str = ""
 
-    # Statistics
     word_count: int = 0
     char_count: int = 0
 
-    # Original paragraph reference (for modifications)
     _paragraph_ref: object = field(default=None, repr=False)
 
 
 @dataclass
 class DocumentStats:
-    """Statistics about the classified document."""
     total_blocks: int = 0
     ayah_blocks: int = 0
     translation_blocks: int = 0
@@ -95,41 +71,31 @@ class DocumentStats:
     total_words: int = 0
     total_characters: int = 0
 
-    # AI processing candidates
     ai_processable_blocks: int = 0
     ai_processable_words: int = 0
 
 
 class TafsirDocumentProcessor:
-    """
-    Smart processor for Tafsir Word documents.
-    Classifies blocks by type for selective AI processing.
-    """
 
-    # Unicode ranges for script detection
     ARABIC_RANGE = re.compile(r'[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF]')
     CYRILLIC_RANGE = re.compile(r'[\u0400-\u04FF\u0500-\u052F]')
 
-    # Known Arabic fonts
     ARABIC_FONTS = {
         'traditional arabic', 'arabic typesetting', 'sakkal majalla',
         'simplified arabic', 'arabic transparent', 'al-quran',
         'scheherazade', 'amiri', 'lateef', 'noto naskh arabic',
-        'times new roman',  # Often used for Arabic in mixed docs
+        'times new roman',
     }
 
-    # Red color threshold (for detecting red text)
-    RED_THRESHOLD = 150  # R value must be > this, G and B < 100
+    RED_THRESHOLD = 150
 
     def __init__(self, file_path: Optional[str] = None):
-        """Initialize the document processor."""
         self.file_path: Optional[Path] = Path(file_path) if file_path else None
         self.document: Optional[Document] = None
         self.blocks: List[TafsirBlock] = []
         self._stats: Optional[DocumentStats] = None
 
     def load(self, file_path: Optional[str] = None) -> bool:
-        """Load a Word document."""
         if file_path:
             self.file_path = Path(file_path)
 
@@ -157,50 +123,41 @@ class TafsirDocumentProcessor:
             return False
 
     def _count_script_chars(self, text: str) -> Tuple[int, int, int]:
-        """Count Arabic, Cyrillic, and other characters."""
         arabic = len(self.ARABIC_RANGE.findall(text))
         cyrillic = len(self.CYRILLIC_RANGE.findall(text))
         other = len(text) - arabic - cyrillic
         return arabic, cyrillic, other
 
     def _extract_font_info(self, paragraph) -> FontInfo:
-        """Extract font information from paragraph runs."""
         info = FontInfo()
 
         if not paragraph.runs:
             return info
 
-        # Analyze the first significant run (or most common)
         for run in paragraph.runs:
             if not run.text.strip():
                 continue
 
-            # Font name
             if run.font.name:
                 info.name = run.font.name
                 info.is_arabic_font = run.font.name.lower() in self.ARABIC_FONTS
 
-            # Font size
             if run.font.size:
                 info.size = run.font.size.pt
 
-            # Bold/Italic
             info.bold = run.font.bold or False
             info.italic = run.font.italic or False
 
-            # Color
             if run.font.color and run.font.color.rgb:
                 rgb = run.font.color.rgb
                 info.color_rgb = (rgb[0], rgb[1], rgb[2])
 
-            # Take first significant run's info
             if info.name:
                 break
 
         return info
 
     def _is_red_color(self, rgb: Optional[Tuple[int, int, int]]) -> bool:
-        """Check if color is red-ish."""
         if not rgb:
             return False
         r, g, b = rgb
@@ -209,79 +166,54 @@ class TafsirDocumentProcessor:
     def _detect_block_type(self, text: str, font_info: FontInfo,
                            arabic_ratio: float, has_arabic: bool,
                            has_cyrillic: bool, style_name: str) -> Tuple[BlockType, str]:
-        """
-        Detect the type of content block using rules-based logic.
-
-        Returns:
-            Tuple of (BlockType, reason_string)
-        """
         text_stripped = text.strip()
 
-        # Empty check
         if not text_stripped:
             return BlockType.EMPTY, "Empty paragraph"
 
-        # Check if it's a header (by style)
         if style_name and 'heading' in style_name.lower():
             return BlockType.HEADER, f"Style: {style_name}"
 
         is_red = self._is_red_color(font_info.color_rgb)
 
-        # === AYAH DETECTION ===
-        # Rule 1: Pure Arabic text (>90%) + red color
         if arabic_ratio > 0.9 and is_red:
             return BlockType.AYAH, "Pure Arabic + red color"
 
-        # Rule 2: Pure Arabic text (>90%) + Arabic font
         if arabic_ratio > 0.9 and font_info.is_arabic_font:
             return BlockType.AYAH, f"Pure Arabic + font: {font_info.name}"
 
-        # Rule 3: Pure Arabic text (>95%) - likely ayah
         if arabic_ratio > 0.95:
             return BlockType.AYAH, "Pure Arabic text (>95%)"
 
-        # Rule 4: High Arabic (>80%) + Traditional Arabic font
         if arabic_ratio > 0.8 and font_info.name and 'arabic' in font_info.name.lower():
             return BlockType.AYAH, f"High Arabic ratio + {font_info.name}"
 
-        # === TRANSLATION DETECTION ===
-        # Rule: Pure Cyrillic, short, follows ayah pattern
         if not has_arabic and has_cyrillic:
-            # Short text after ayah is likely translation
             if len(text_stripped) < 500:
                 return BlockType.TRANSLATION, "Pure Cyrillic, moderate length"
 
-        # === COMMENTARY DETECTION ===
-        # Rule: Cyrillic text (can be mixed with some Arabic terms)
         if has_cyrillic and arabic_ratio < 0.3:
             return BlockType.COMMENTARY, f"Cyrillic-dominant ({arabic_ratio:.0%} Arabic)"
 
-        # Mixed but Cyrillic-heavy
         if has_cyrillic and has_arabic and arabic_ratio < 0.5:
             return BlockType.COMMENTARY, "Mixed text, Cyrillic-dominant"
 
-        # === REFERENCE DETECTION ===
-        # Patterns like (1:1), [Бухари], numbers
         ref_patterns = [
-            r'^\s*\[\d+\]',           # [1]
-            r'^\s*\(\d+:\d+\)',       # (1:1)
-            r'^\s*\d+\.\s',           # 1.
-            r'сура|аят|хадис',        # Keywords
+            r'^\s*\[\d+\]',
+            r'^\s*\(\d+:\d+\)',
+            r'^\s*\d+\.\s',
+            r'сура|аят|хадис',
         ]
         for pattern in ref_patterns:
             if re.search(pattern, text_stripped.lower()):
                 return BlockType.REFERENCE, f"Matches reference pattern"
 
-        # === FALLBACK ===
         if has_arabic and not has_cyrillic:
             return BlockType.AYAH, "Arabic-only (fallback)"
 
         return BlockType.UNKNOWN, "No matching rules"
 
     def classify_paragraph(self, index: int, paragraph) -> TafsirBlock:
-        """
-        Classify a single paragraph into a TafsirBlock.
-        """
         text = paragraph.text
         arabic_count, cyrillic_count, _ = self._count_script_chars(text)
         total_chars = len(text.replace(' ', '').replace('\n', ''))
@@ -290,18 +222,14 @@ class TafsirDocumentProcessor:
         has_cyrillic = cyrillic_count > 0
         arabic_ratio = arabic_count / total_chars if total_chars > 0 else 0
 
-        # Extract font info
         font_info = self._extract_font_info(paragraph)
 
-        # Get style name
         style_name = paragraph.style.name if paragraph.style else ""
 
-        # Detect block type
         block_type, detection_reason = self._detect_block_type(
             text, font_info, arabic_ratio, has_arabic, has_cyrillic, style_name
         )
 
-        # Determine if can be processed with AI
         can_ai = block_type in (BlockType.COMMENTARY, BlockType.TRANSLATION)
         ai_notes = ""
         if block_type == BlockType.AYAH:
@@ -331,12 +259,6 @@ class TafsirDocumentProcessor:
         )
 
     def classify_document(self) -> List[TafsirBlock]:
-        """
-        Classify all paragraphs in the document.
-
-        Returns:
-            List of TafsirBlock objects
-        """
         if not self.document:
             raise ValueError("No document loaded. Call load() first.")
 
@@ -345,11 +267,10 @@ class TafsirDocumentProcessor:
             block = self.classify_paragraph(i, para)
             self.blocks.append(block)
 
-        self._stats = None  # Reset stats cache
+        self._stats = None
         return self.blocks
 
     def get_stats(self) -> DocumentStats:
-        """Get classification statistics."""
         if not self.blocks:
             self.classify_document()
 
@@ -386,21 +307,16 @@ class TafsirDocumentProcessor:
         return stats
 
     def get_blocks_by_type(self, block_type: BlockType) -> List[TafsirBlock]:
-        """Get all blocks of a specific type."""
         if not self.blocks:
             self.classify_document()
         return [b for b in self.blocks if b.block_type == block_type]
 
     def get_ai_processable_blocks(self) -> List[TafsirBlock]:
-        """Get all blocks that can be processed with AI."""
         if not self.blocks:
             self.classify_document()
         return [b for b in self.blocks if b.can_process_with_ai]
 
     def print_classification(self, limit: Optional[int] = None, show_empty: bool = False):
-        """
-        Print classified blocks with their types.
-        """
         if not self.blocks:
             self.classify_document()
 
@@ -408,7 +324,6 @@ class TafsirDocumentProcessor:
         print(f"DOCUMENT CLASSIFICATION: {self.file_path.name}")
         print(f"{'='*70}\n")
 
-        # Type indicators
         type_icons = {
             BlockType.AYAH: "[AYAH]      ",
             BlockType.TRANSLATION: "[TRANSLATE] ",
@@ -431,7 +346,6 @@ class TafsirDocumentProcessor:
             icon = type_icons.get(block.block_type, "[???]")
             ai_marker = " [AI-OK]" if block.can_process_with_ai else ""
 
-            # Truncate text for display
             display_text = block.text[:80].replace('\n', ' ')
             if len(block.text) > 80:
                 display_text += "..."
@@ -443,7 +357,6 @@ class TafsirDocumentProcessor:
 
             count += 1
 
-        # Print statistics
         stats = self.get_stats()
         print(f"\n{'='*70}")
         print("CLASSIFICATION SUMMARY")
@@ -468,54 +381,42 @@ class TafsirDocumentProcessor:
 
 
 def create_sample_document(output_path: str = "documents/sample_tafsir.docx"):
-    """Create a realistic sample Tafsir document for testing."""
     doc = Document()
 
-    # Title
     title = doc.add_heading('Тафсир Суры Аль-Фатиха', 0)
 
-    # Introduction (COMMENTARY)
     doc.add_paragraph(
         'Сура «Аль-Фатиха» является первой сурой Священного Корана. '
         'Она называется также «Умм аль-Китаб» (Мать Книги) и «Ас-Сабу аль-Масани» '
         '(Семь повторяемых). Эта сура занимает особое место в исламе.'
     )
 
-    # Ayah 1 - Arabic (should be detected as AYAH)
     ayah1 = doc.add_paragraph('بِسْمِ اللَّهِ الرَّحْمَٰنِ الرَّحِيمِ')
-    # Make it red
     for run in ayah1.runs:
         run.font.color.rgb = RGBColor(180, 0, 0)
 
-    # Translation
     doc.add_paragraph('Во имя Аллаха, Милостивого, Милосердного.')
 
-    # Commentary
     doc.add_paragraph(
         'Тафсир: Эти слова являются началом всех благих дел. Мусульманин произносит '
         '«Бисмиллях» перед едой, перед чтением Корана, перед любым важным делом. '
         'Слово «Аллах» — это имя Всевышнего Господа, объединяющее все Его прекрасные имена.'
     )
 
-    # Ayah 2
     ayah2 = doc.add_paragraph('الْحَمْدُ لِلَّهِ رَبِّ الْعَالَمِينَ')
     for run in ayah2.runs:
         run.font.color.rgb = RGBColor(180, 0, 0)
 
-    # Translation
     doc.add_paragraph('Хвала Аллаху, Господу миров!')
 
-    # Commentary with mixed text
     doc.add_paragraph(
         'Слово «الحمد» (аль-хамд) означает восхваление и благодарность. '
         'Это более полное слово, чем просто «شكر» (шукр — благодарность). '
         'Господь миров — это Тот, Кто создал и поддерживает всё существующее.'
     )
 
-    # Reference
     doc.add_paragraph('[Тафсир ибн Касир, том 1, стр. 25]')
 
-    # More ayahs
     ayah3 = doc.add_paragraph('الرَّحْمَٰنِ الرَّحِيمِ')
     for run in ayah3.runs:
         run.font.color.rgb = RGBColor(180, 0, 0)
@@ -528,7 +429,6 @@ def create_sample_document(output_path: str = "documents/sample_tafsir.docx"):
         'а Ар-Рахим — на особую милость к верующим в День Суда.'
     )
 
-    # Save
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
     doc.save(str(output))
@@ -537,7 +437,6 @@ def create_sample_document(output_path: str = "documents/sample_tafsir.docx"):
     return str(output)
 
 
-# Main execution
 if __name__ == "__main__":
     import sys
 
@@ -558,6 +457,5 @@ if __name__ == "__main__":
         processor.classify_document()
         processor.print_classification(limit=30)
 
-        # Show AI-processable summary
         ai_blocks = processor.get_ai_processable_blocks()
         print(f"\n[INFO] Found {len(ai_blocks)} blocks ready for AI processing")

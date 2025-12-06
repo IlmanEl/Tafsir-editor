@@ -1,23 +1,4 @@
 #!/usr/bin/env python3
-"""
-Tafsir Editor - Main Entry Point
-
-A Python application for editing Word documents containing
-Quran Tafsir with mixed Russian-Arabic text.
-
-Features:
-- Smart block classification (AYAH, TRANSLATION, COMMENTARY)
-- AI-powered editing with OpenAI GPT
-- Visual diff in Word (strikethrough old, highlight new)
-- Automatic database setup
-
-Usage:
-    python main.py                      # Auto-setup database and run demo
-    python main.py --classify <file>    # Classify document blocks
-    python main.py --edit <file>        # AI edit with visual diff (creates copy)
-    python main.py --edit <file> --dry-run  # Preview changes without saving
-    python main.py --process <file>     # Process and log to database
-"""
 
 import sys
 import argparse
@@ -40,7 +21,6 @@ from document_processor import (
 
 
 def print_banner():
-    """Print application banner."""
     banner = """
 ======================================================
      TAFSIR EDITOR
@@ -53,7 +33,6 @@ def print_banner():
 
 
 def test_all_connections() -> bool:
-    """Test both PostgreSQL and Supabase API connections."""
     print("\n" + "="*50)
     print("DATABASE CONNECTION TEST")
     print("="*50 + "\n")
@@ -79,7 +58,6 @@ def test_all_connections() -> bool:
 
 
 def setup_database() -> bool:
-    """Automatically create database tables."""
     print("\n" + "="*50)
     print("DATABASE SETUP (AUTO)")
     print("="*50 + "\n")
@@ -99,7 +77,6 @@ def setup_database() -> bool:
 
 
 def drop_database():
-    """Drop all tables (with confirmation)."""
     print("\n" + "="*50)
     print("DROP DATABASE TABLES")
     print("="*50 + "\n")
@@ -119,9 +96,6 @@ def drop_database():
 
 
 def classify_document(file_path: str):
-    """
-    Classify document blocks and show detailed analysis.
-    """
     print("\n" + "="*70)
     print("SMART DOCUMENT CLASSIFICATION")
     print("="*70 + "\n")
@@ -135,7 +109,6 @@ def classify_document(file_path: str):
     processor.classify_document()
     processor.print_classification(limit=50)
 
-    # Show AI processing summary
     ai_blocks = processor.get_ai_processable_blocks()
     ayah_blocks = processor.get_blocks_by_type(BlockType.AYAH)
 
@@ -157,25 +130,17 @@ def classify_document(file_path: str):
 
 
 def edit_document_with_ai(file_path: str, dry_run: bool = False, max_blocks: int = None):
-    """
-    Edit document using AI with visual diff.
-    Creates a copy with _edited suffix.
-    """
-    # Import here to avoid circular imports
     from ai_editor import edit_document
 
-    # Check OpenAI key
     if not config.OPENAI_API_KEY:
         print("\n[ERROR] OPENAI_API_KEY is not set in .env")
         print("Add your OpenAI API key to .env file:")
         print("  OPENAI_API_KEY=sk-...")
         return False
 
-    # Generate output path
     input_file = Path(file_path)
     output_path = str(input_file.parent / f"{input_file.stem}_edited{input_file.suffix}")
 
-    # Run AI editing
     total, changed, results = edit_document(
         input_path=file_path,
         output_path=output_path,
@@ -194,7 +159,6 @@ def edit_document_with_ai(file_path: str, dry_run: bool = False, max_blocks: int
   Review the changes in Word, then accept/reject as needed.
 """)
 
-    # Log to database
     if not dry_run and changed > 0:
         try:
             client = get_supabase_client()
@@ -219,7 +183,6 @@ def edit_document_with_ai(file_path: str, dry_run: bool = False, max_blocks: int
 
 
 def process_document(file_path: str):
-    """Process a Word document with classification and database logging."""
     print("\n" + "="*50)
     print("DOCUMENT PROCESSING")
     print("="*50 + "\n")
@@ -232,7 +195,6 @@ def process_document(file_path: str):
     processor.classify_document()
     processor.print_classification(limit=20)
 
-    # Log to database
     try:
         client = get_supabase_client()
         stats = processor.get_stats()
@@ -262,7 +224,6 @@ def process_document(file_path: str):
 
 
 def run_demo():
-    """Run a full demonstration with sample document."""
     print("\n" + "="*50)
     print("RUNNING DEMO")
     print("="*50 + "\n")
@@ -273,7 +234,6 @@ def run_demo():
 
 
 def main():
-    """Main entry point."""
     parser = argparse.ArgumentParser(
         description="Tafsir Editor - Smart Document Parser with AI Editing"
     )
@@ -326,10 +286,8 @@ def main():
 
     args = parser.parse_args()
 
-    # Print banner
     print_banner()
 
-    # Handle specific commands
     if args.test_connection:
         success = test_all_connections()
         sys.exit(0 if success else 1)
@@ -375,9 +333,6 @@ def main():
         run_demo()
         return
 
-    # ===========================================
-    # DEFAULT: Full automatic setup
-    # ===========================================
     print("Running automatic setup...\n")
 
     print("Step 1/4: Validating configuration...")
@@ -426,4 +381,3 @@ AI Editing:
 
 if __name__ == "__main__":
     main()
-    

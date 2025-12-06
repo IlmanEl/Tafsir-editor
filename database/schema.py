@@ -1,16 +1,8 @@
-"""
-Database schema definitions and setup.
-Creates tables for Tafsir Editor using direct PostgreSQL connection.
-
-Uses psycopg2 for DDL operations (CREATE TABLE, etc.)
-"""
-
 import psycopg2
 from psycopg2 import sql
 from config import config
 
 
-# SQL statements for creating tables
 SCHEMA_SQL = """
 -- ============================================
 -- TAFSIR EDITOR DATABASE SCHEMA
@@ -125,7 +117,6 @@ CREATE INDEX IF NOT EXISTS idx_transliteration_rules_priority
 ON transliteration_rules(priority DESC);
 """
 
-# Initial data to seed the database
 SEED_SQL = """
 -- Default formatting rule for Tafsir
 INSERT INTO formatting_rules (name, description, font_name_arabic, font_name_cyrillic)
@@ -171,12 +162,6 @@ DROP TABLE IF EXISTS formatting_rules CASCADE;
 
 
 def get_db_connection():
-    """
-    Create a direct PostgreSQL connection using DATABASE_URL.
-
-    Returns:
-        psycopg2 connection object
-    """
     if not config.DATABASE_URL:
         raise ValueError("DATABASE_URL is not set in .env file")
 
@@ -184,35 +169,23 @@ def get_db_connection():
 
 
 def create_tables(seed_data: bool = True) -> bool:
-    """
-    Create all database tables using direct PostgreSQL connection.
-
-    Args:
-        seed_data: Whether to insert initial data (default: True)
-
-    Returns:
-        bool: True if successful, False otherwise
-    """
     conn = None
     try:
         print("Connecting to PostgreSQL database...")
         conn = get_db_connection()
         cursor = conn.cursor()
 
-        # Execute schema creation
         print("Creating tables...")
         cursor.execute(SCHEMA_SQL)
         conn.commit()
         print("   Tables created successfully")
 
-        # Insert seed data
         if seed_data:
             print("Inserting initial data...")
             cursor.execute(SEED_SQL)
             conn.commit()
             print("   Initial data inserted")
 
-        # Verify tables exist
         cursor.execute("""
             SELECT table_name
             FROM information_schema.tables
@@ -246,12 +219,6 @@ def create_tables(seed_data: bool = True) -> bool:
 
 
 def drop_tables() -> bool:
-    """
-    Drop all tables (use with caution!).
-
-    Returns:
-        bool: True if successful
-    """
     conn = None
     try:
         print("WARNING: Dropping all tables...")
@@ -276,12 +243,6 @@ def drop_tables() -> bool:
 
 
 def check_tables_exist() -> dict:
-    """
-    Check which tables exist in the database.
-
-    Returns:
-        dict: Table names mapped to existence status
-    """
     conn = None
     tables_status = {
         'formatting_rules': False,
@@ -316,17 +277,10 @@ def check_tables_exist() -> dict:
 
 
 def get_schema_sql() -> str:
-    """Return the SQL schema for reference."""
     return SCHEMA_SQL + "\n" + SEED_SQL
 
 
 def test_db_connection() -> bool:
-    """
-    Test the direct PostgreSQL connection.
-
-    Returns:
-        bool: True if connection successful
-    """
     conn = None
     try:
         print(f"Testing connection to: {config.DATABASE_URL[:50]}...")

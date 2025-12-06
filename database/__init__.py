@@ -1,5 +1,3 @@
-"""Database module for Tafsir Editor."""
-
 from .connection import get_supabase_client, test_connection
 from .schema import (
     create_tables,
