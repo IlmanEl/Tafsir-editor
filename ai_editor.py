@@ -1,10 +1,3 @@
-"""
-AI Editor Module for Tafsir Documents.
-Uses OpenAI GPT to correct (NOT rewrite) COMMENTARY and TRANSLATION blocks.
-Implements surgical word-level diff in Word documents.
-Adds beautiful Unicode brackets for Quranic verses with proper font rendering.
-"""
-
 from typing import Optional, List, Tuple
 from dataclasses import dataclass
 from pathlib import Path
