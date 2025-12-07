@@ -127,30 +127,38 @@ VALUES (
     'Times New Roman'
 ) ON CONFLICT (name) DO NOTHING;
 
--- Sample transliteration rules
-INSERT INTO transliteration_rules (name, category, cyrillic_pattern, arabic_pattern, priority)
+-- Золотой стандарт транслитерации (инструкция заказчика)
+INSERT INTO transliteration_rules (name, category, cyrillic_pattern, arabic_pattern, priority, notes)
 VALUES
-    ('alif', 'vowels', 'а', 'ا', 100),
-    ('ba', 'consonants', 'б', 'ب', 100),
-    ('ta', 'consonants', 'т', 'ت', 100),
-    ('tha', 'consonants', 'с̱', 'ث', 100),
-    ('jim', 'consonants', 'дж', 'ج', 110),
-    ('ha', 'consonants', 'х̣', 'ح', 100),
-    ('kha', 'consonants', 'х', 'خ', 90),
-    ('dal', 'consonants', 'д', 'د', 100),
-    ('ra', 'consonants', 'р', 'ر', 100),
-    ('sin', 'consonants', 'с', 'س', 90),
-    ('shin', 'consonants', 'ш', 'ش', 100),
-    ('ain', 'consonants', 'ъ', 'ع', 100),
-    ('ghain', 'consonants', 'г̣', 'غ', 100),
-    ('fa', 'consonants', 'ф', 'ف', 100),
-    ('qaf', 'consonants', 'к̣', 'ق', 100),
-    ('kaf', 'consonants', 'к', 'ك', 90),
-    ('lam', 'consonants', 'л', 'ل', 100),
-    ('mim', 'consonants', 'м', 'م', 100),
-    ('nun', 'consonants', 'н', 'ن', 100),
-    ('waw', 'consonants', 'в', 'و', 100),
-    ('ya', 'consonants', 'й', 'ي', 100)
+    ('alif', 'vowels', 'а', 'ا', 100, 'Базовая гласная'),
+    ('ba', 'consonants', 'б', 'ب', 100, 'Звук б'),
+    ('ta', 'consonants', 'т', 'ت', 100, 'Обычная т'),
+    ('tha', 'consonants', 'с̱', 'ث', 100, 'Межзубная с (с чертой снизу)'),
+    ('jim', 'consonants', 'дж', 'ج', 110, 'Звук дж'),
+    ('ha_soft', 'consonants', 'х', 'ح', 100, 'Русская х (ха с точкой)'),
+    ('kha', 'consonants', 'х', 'خ', 90, 'Хa'),
+    ('dal', 'consonants', 'д', 'د', 100, 'Звук д'),
+    ('zal', 'consonants', 'з̱', 'ذ', 100, 'Межзубная з (з с чертой снизу)'),
+    ('ra', 'consonants', 'р', 'ر', 100, 'Звук р'),
+    ('zay', 'consonants', 'з', 'ز', 100, 'Звук з'),
+    ('sin', 'consonants', 'с', 'س', 90, 'Обычная с'),
+    ('shin', 'consonants', 'ш', 'ش', 100, 'Звук ш'),
+    ('sad', 'consonants', 'с', 'ص', 100, 'Эмфатическая твердая с'),
+    ('dad', 'consonants', 'д', 'ض', 100, 'Эмфатическая д'),
+    ('ta_hard', 'consonants', 'т', 'ط', 100, 'Эмфатическая т'),
+    ('za', 'consonants', 'з', 'ظ', 100, 'Эмфатическая з'),
+    ('ain', 'consonants', 'ʻ', 'ع', 100, 'Перевернутый апостроф (айн)'),
+    ('ghain', 'consonants', 'г', 'غ', 100, 'Звук г (гайн)'),
+    ('fa', 'consonants', 'ф', 'ف', 100, 'Звук ф'),
+    ('qaf', 'consonants', 'к̣', 'ق', 100, 'Кяф с точкой'),
+    ('kaf', 'consonants', 'к', 'ك', 90, 'Обычная к'),
+    ('lam', 'consonants', 'л', 'ل', 100, 'Звук л'),
+    ('mim', 'consonants', 'м', 'م', 100, 'Звук м'),
+    ('nun', 'consonants', 'н', 'ن', 100, 'Звук н'),
+    ('ha_hard', 'special', 'h', 'ه', 200, 'Латинская h - КРИТИЧНО для имени Аллаh!'),
+    ('waw', 'consonants', 'в', 'و', 100, 'Звук в'),
+    ('ya', 'consonants', 'й', 'ي', 100, 'Звук й'),
+    ('hamza', 'special', '''', 'ء', 150, 'Апостроф (хамза)')
 ON CONFLICT DO NOTHING;
 """
 

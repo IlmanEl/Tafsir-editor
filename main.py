@@ -129,7 +129,8 @@ def classify_document(file_path: str):
     return True
 
 
-def edit_document_with_ai(file_path: str, dry_run: bool = False, max_blocks: int = None):
+def edit_document_with_ai(file_path: str, dry_run: bool = False, max_blocks: int = None,
+                          use_cache: bool = True, clear_cache: bool = False):
     from ai_editor import edit_document
 
     if not config.OPENAI_API_KEY:
@@ -141,11 +142,13 @@ def edit_document_with_ai(file_path: str, dry_run: bool = False, max_blocks: int
     input_file = Path(file_path)
     output_path = str(input_file.parent / f"{input_file.stem}_edited{input_file.suffix}")
 
-    total, changed, results = edit_document(
+    total, changed, _ = edit_document(
         input_path=file_path,
         output_path=output_path,
         max_blocks=max_blocks,
-        dry_run=dry_run
+        dry_run=dry_run,
+        use_cache=use_cache,
+        clear_cache=clear_cache
     )
 
     if changed > 0 and not dry_run:
@@ -283,6 +286,16 @@ def main():
         action="store_true",
         help="Run demonstration with sample document"
     )
+    parser.add_argument(
+        "--no-cache",
+        action="store_true",
+        help="Disable caching (use with --edit)"
+    )
+    parser.add_argument(
+        "--clear-cache",
+        action="store_true",
+        help="Clear existing cache before processing (use with --edit)"
+    )
 
     args = parser.parse_args()
 
@@ -318,7 +331,9 @@ def main():
         edit_document_with_ai(
             args.edit,
             dry_run=args.dry_run,
-            max_blocks=args.max_blocks
+            max_blocks=args.max_blocks,
+            use_cache=not args.no_cache,
+            clear_cache=args.clear_cache
         )
         return
 

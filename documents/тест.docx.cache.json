@@ -1,0 +1,35 @@
+{
+  "metadata": {
+    "document_path": "documents/тест.docx",
+    "model": "gpt-4o-mini",
+    "total_blocks": 14,
+    "created_at": "2025-12-07T12:46:23.368266",
+    "last_updated": "2025-12-07T12:46:23.368285"
+  },
+  "results": {
+    "1": {
+      "block_index": 1,
+      "original_text": "Они говорят:",
+      "edited_text": "Они говорят:",
+      "was_changed": false,
+      "error": null,
+      "skipped_original": true
+    },
+    "7": {
+      "block_index": 7,
+      "original_text": "Толкование Суры «аль-Исра’»",
+      "edited_text": "Толкование Суры «аль-Исра’»",
+      "was_changed": false,
+      "error": null,
+      "skipped_original": true
+    },
+    "16": {
+      "block_index": 16,
+      "original_text": "Сура «Аль-Исра’», аят: (1)",
+      "edited_text": "Сура «Аль-Исра’», аят: (1)",
+      "was_changed": false,
+      "error": null,
+      "skipped_original": true
+    }
+  }
+}

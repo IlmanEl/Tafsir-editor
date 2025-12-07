@@ -1,7 +1,10 @@
-from typing import Optional, List, Tuple
-from dataclasses import dataclass
+from typing import Optional, List, Tuple, Dict
+from dataclasses import dataclass, asdict
 from pathlib import Path
 import difflib
+import json
+import time
+from datetime import datetime
 
 from openai import OpenAI
 from docx import Document
@@ -123,6 +126,75 @@ class EditResult:
     error: Optional[str] = None
     skipped_original: bool = False
 
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> 'EditResult':
+        return cls(**data)
+
+
+class EditCache:
+    def __init__(self, cache_path: str):
+        self.cache_path = Path(cache_path)
+        self.cache: Dict[int, EditResult] = {}
+        self.metadata: dict = {}
+        self._load()
+
+    def _load(self):
+        if self.cache_path.exists():
+            try:
+                with open(self.cache_path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    self.metadata = data.get('metadata', {})
+                    results_data = data.get('results', {})
+                    for block_idx_str, result_dict in results_data.items():
+                        block_idx = int(block_idx_str)
+                        self.cache[block_idx] = EditResult.from_dict(result_dict)
+                print(f"[CACHE] Loaded {len(self.cache)} cached results from {self.cache_path.name}")
+            except Exception as e:
+                print(f"[CACHE] Failed to load cache: {e}")
+                self.cache = {}
+
+    def get_result(self, block_index: int) -> Optional[EditResult]:
+        return self.cache.get(block_index)
+
+    def save_result(self, result: EditResult):
+        self.cache[result.block_index] = result
+        self._persist()
+
+    def _persist(self):
+        try:
+            data = {
+                'metadata': self.metadata,
+                'results': {str(idx): result.to_dict() for idx, result in self.cache.items()}
+            }
+            self.cache_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(self.cache_path, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            print(f"[CACHE] Failed to save cache: {e}")
+
+    def set_metadata(self, document_path: str, model: str, total_blocks: int):
+        self.metadata = {
+            'document_path': document_path,
+            'model': model,
+            'total_blocks': total_blocks,
+            'created_at': datetime.now().isoformat(),
+            'last_updated': datetime.now().isoformat()
+        }
+
+    def update_metadata(self):
+        self.metadata['last_updated'] = datetime.now().isoformat()
+        self.metadata['cached_blocks'] = len(self.cache)
+
+    def clear(self):
+        if self.cache_path.exists():
+            self.cache_path.unlink()
+        self.cache = {}
+        self.metadata = {}
+        print(f"[CACHE] Cache cleared: {self.cache_path.name}")
+
 
 class TafsirAIEditor:
     def __init__(self):
@@ -145,31 +217,42 @@ class TafsirAIEditor:
     def is_ready(self) -> bool:
         return self.client is not None
 
-    def edit_text(self, text: str) -> Tuple[str, Optional[str]]:
+    def edit_text(self, text: str, max_retries: int = 3) -> Tuple[str, Optional[str]]:
         if not self.client:
             return text, "OpenAI client not initialized"
 
         if not text.strip():
             return text, None
 
-        try:
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": get_system_prompt()},
-                    {"role": "user", "content": text}
-                ],
-                temperature=0.1,
-                max_tokens=len(text) * 2 + 500,
-            )
+        for attempt in range(1, max_retries + 1):
+            try:
+                response = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=[
+                        {"role": "system", "content": get_system_prompt()},
+                        {"role": "user", "content": text}
+                    ],
+                    temperature=0.1,
+                    max_tokens=len(text) * 2 + 500,
+                )
 
-            edited = response.choices[0].message.content.strip()
-            return edited, None
+                edited = response.choices[0].message.content.strip()
+                return edited, None
 
-        except Exception as e:
-            return text, f"OpenAI API error: {str(e)}"
+            except Exception as e:
+                error_msg = str(e)
 
-    def edit_block(self, block: TafsirBlock) -> EditResult:
+                if attempt < max_retries:
+                    wait_time = 2 ** attempt
+                    print(f"[RETRY] Attempt {attempt}/{max_retries} failed: {error_msg}")
+                    print(f"[RETRY] Waiting {wait_time}s before retry...")
+                    time.sleep(wait_time)
+                else:
+                    return text, f"OpenAI API error after {max_retries} attempts: {error_msg}"
+
+        return text, "Max retries exceeded"
+
+    def edit_block(self, block: TafsirBlock, max_retries: int = 3) -> EditResult:
         if not block.can_process_with_ai:
             return EditResult(
                 block_index=block.index,
@@ -179,7 +262,7 @@ class TafsirAIEditor:
                 error="Block is not marked for AI processing"
             )
 
-        edited_text, error = self.edit_text(block.text)
+        edited_text, error = self.edit_text(block.text, max_retries=max_retries)
 
         if edited_text.strip().upper() == "ORIGINAL":
             return EditResult(
@@ -347,18 +430,30 @@ def edit_document(
     input_path: str,
     output_path: Optional[str] = None,
     max_blocks: Optional[int] = None,
-    dry_run: bool = False
+    dry_run: bool = False,
+    use_cache: bool = True,
+    clear_cache: bool = False
 ) -> Tuple[int, int, List[EditResult]]:
     if not output_path:
         input_file = Path(input_path)
         output_path = str(input_file.parent / f"{input_file.stem}_edited{input_file.suffix}")
 
+    cache_path = f"{input_path}.cache.json"
+    cache = EditCache(cache_path) if use_cache else None
+
+    if clear_cache and cache:
+        cache.clear()
+
     print("\n" + "=" * 70)
     print("AI-POWERED DOCUMENT CORRECTION (Surgical Word-Level Diff)")
+    if use_cache:
+        print("WITH RESUMABLE PROCESSING (Checkpoints)")
     print("=" * 70)
     print(f"\n  Input:  {input_path}")
     print(f"  Output: {output_path}")
     print(f"  Model:  {config.OPENAI_MODEL}")
+    if use_cache:
+        print(f"  Cache:  {cache_path}")
     if dry_run:
         print("  Mode:   DRY RUN (no changes will be saved)")
     print()
@@ -377,11 +472,19 @@ def edit_document(
     ai_blocks = processor.get_ai_processable_blocks()
     ayah_blocks = processor.get_blocks_by_type(BlockType.AYAH)
 
+    if cache and use_cache:
+        cache.set_metadata(input_path, config.OPENAI_MODEL, len(ai_blocks))
+
     if max_blocks:
         ai_blocks = ai_blocks[:max_blocks]
 
     print(f"  Found {len(ai_blocks)} blocks for AI correction")
-    print(f"  Found {len(ayah_blocks)} ayah blocks (will add beautiful brackets)\n")
+    print(f"  Found {len(ayah_blocks)} ayah blocks (will add beautiful brackets)")
+
+    if cache and len(cache.cache) > 0:
+        print(f"  [CACHE] {len(cache.cache)} blocks already cached\n")
+    else:
+        print()
 
     if not ai_blocks and not ayah_blocks:
         print("[INFO] No blocks to process")
@@ -390,26 +493,64 @@ def edit_document(
     results: List[EditResult] = []
     total_changed = 0
     total_skipped = 0
+    total_cached = 0
 
     for i, block in enumerate(ai_blocks):
         block_type = "COMMENTARY" if block.block_type == BlockType.COMMENTARY else "TRANSLATION"
         print(f"  [{i+1}/{len(ai_blocks)}] Processing {block_type} block #{block.index}...", end=" ")
 
-        result = editor.edit_block(block)
+        cached_result = cache.get_result(block.index) if cache else None
+
+        if cached_result:
+            result = cached_result
+            print("CACHED")
+            total_cached += 1
+        else:
+            try:
+                result = editor.edit_block(block, max_retries=3)
+
+                if cache:
+                    cache.save_result(result)
+
+                if result.error:
+                    print(f"ERROR: {result.error}")
+                    print("[CACHE] Progress saved. You can resume by re-running the command.")
+                    break
+                elif result.skipped_original:
+                    print("ORIGINAL")
+                    total_skipped += 1
+                elif result.was_changed:
+                    print("CHANGED")
+                    total_changed += 1
+                else:
+                    print("no changes")
+
+            except KeyboardInterrupt:
+                print("\n[INTERRUPTED] Saving progress...")
+                if cache:
+                    cache.update_metadata()
+                print("[CACHE] Progress saved. Resume by re-running the command.")
+                return len(results), total_changed, results
+            except Exception as e:
+                print(f"FATAL ERROR: {e}")
+                if cache:
+                    cache.update_metadata()
+                print("[CACHE] Progress saved.")
+                break
+
         results.append(result)
 
-        if result.error:
-            print(f"ERROR: {result.error}")
-        elif result.skipped_original:
-            print("ORIGINAL (already good)")
-            total_skipped += 1
-        elif result.was_changed:
-            print("CHANGED")
+        if result.was_changed and not result.skipped_original:
             total_changed += 1
-        else:
-            print("no changes")
+        elif result.skipped_original:
+            total_skipped += 1
+
+    if cache:
+        cache.update_metadata()
 
     print(f"\n  Processed: {len(results)}, Changed: {total_changed}, Skipped (ORIGINAL): {total_skipped}")
+    if total_cached > 0:
+        print(f"  [CACHE] Loaded from cache: {total_cached}")
 
     if not dry_run and (total_changed > 0 or ayah_blocks):
         print("\n  Applying surgical word-level diff to document...")

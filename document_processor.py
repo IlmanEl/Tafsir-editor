@@ -14,6 +14,7 @@ class BlockType(Enum):
     AYAH = "ayah"
     TRANSLATION = "translation"
     COMMENTARY = "commentary"
+    EXPLANATION = "explanation"
     HEADER = "header"
     REFERENCE = "reference"
     EMPTY = "empty"
@@ -63,6 +64,7 @@ class DocumentStats:
     ayah_blocks: int = 0
     translation_blocks: int = 0
     commentary_blocks: int = 0
+    explanation_blocks: int = 0
     header_blocks: int = 0
     reference_blocks: int = 0
     empty_blocks: int = 0
@@ -174,6 +176,11 @@ class TafsirDocumentProcessor:
         if style_name and 'heading' in style_name.lower():
             return BlockType.HEADER, f"Style: {style_name}"
 
+        explanation_keywords = ["объяснение:", "толкование:", "тафсир:"]
+        for keyword in explanation_keywords:
+            if text_stripped.lower().startswith(keyword):
+                return BlockType.EXPLANATION, f"Starts with '{keyword}'"
+
         is_red = self._is_red_color(font_info.color_rgb)
 
         if arabic_ratio > 0.9 and is_red:
@@ -230,7 +237,7 @@ class TafsirDocumentProcessor:
             text, font_info, arabic_ratio, has_arabic, has_cyrillic, style_name
         )
 
-        can_ai = block_type in (BlockType.COMMENTARY, BlockType.TRANSLATION)
+        can_ai = block_type in (BlockType.COMMENTARY, BlockType.TRANSLATION, BlockType.EXPLANATION)
         ai_notes = ""
         if block_type == BlockType.AYAH:
             ai_notes = "PROTECTED: Quranic text - no AI modification"
@@ -290,6 +297,8 @@ class TafsirDocumentProcessor:
                 stats.translation_blocks += 1
             elif block.block_type == BlockType.COMMENTARY:
                 stats.commentary_blocks += 1
+            elif block.block_type == BlockType.EXPLANATION:
+                stats.explanation_blocks += 1
             elif block.block_type == BlockType.HEADER:
                 stats.header_blocks += 1
             elif block.block_type == BlockType.REFERENCE:
@@ -328,6 +337,7 @@ class TafsirDocumentProcessor:
             BlockType.AYAH: "[AYAH]      ",
             BlockType.TRANSLATION: "[TRANSLATE] ",
             BlockType.COMMENTARY: "[COMMENTARY]",
+            BlockType.EXPLANATION: "[EXPLAIN]   ",
             BlockType.HEADER: "[HEADER]    ",
             BlockType.REFERENCE: "[REFERENCE] ",
             BlockType.EMPTY: "[EMPTY]     ",
@@ -368,6 +378,7 @@ class TafsirDocumentProcessor:
     AYAH (Quran):     {stats.ayah_blocks:4d}  <- PROTECTED from AI
     TRANSLATION:      {stats.translation_blocks:4d}  <- Can process with AI
     COMMENTARY:       {stats.commentary_blocks:4d}  <- Can process with AI
+    EXPLANATION:      {stats.explanation_blocks:4d}  <- Can process with AI
     HEADER:           {stats.header_blocks:4d}
     REFERENCE:        {stats.reference_blocks:4d}
     EMPTY:            {stats.empty_blocks:4d}
